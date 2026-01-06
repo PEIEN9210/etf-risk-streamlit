@@ -26,18 +26,18 @@ ETF_RANK_URL = "https://tw.stock.yahoo.com/tw-etf/volume"  # 成交量排行
 # 1️⃣ 抓熱門 ETF（成交量排行）
 # ===============================
 @st.cache_data(ttl=CACHE_TTL)
-def fetch_top_etf_by_volume(limit=10):
+def fetch_top_etf_by_volume(limit=15):
     try:
-        # 讀取成交量排行表格
         tables = pd.read_html(ETF_RANK_URL)
         if not tables:
             return []
         df = tables[0]
-        # 假設第一欄是 名次，第二欄是 ETF 名稱/代號
-        # 找 ETF 代碼欄位（包含 .TW ）
         df["代碼"] = df.iloc[:, 1].astype(str).str.extract(r"([0-9]{3,5})")[0]
         df = df.dropna(subset=["代碼"])
         return df["代碼"].unique()[:limit].tolist()
+    except ImportError as e:
+        st.error("❌ 讀取 ETF 排行表需要 lxml/html5lib，請安裝套件：pip install lxml html5lib")
+        return []
     except Exception as e:
         st.warning(f"⚠️ 取得熱門 ETF 失敗：{e}")
         return []
@@ -104,7 +104,6 @@ def calculate_theta(age, horizon, loss_tol, market_react):
 # 6️⃣ 風險指數
 # ===============================
 def compute_etf_risk_index(row):
-    # 這裡簡化型態因為沒靜態類型資料
     type_risk = 0.6
     score = 0.4 * type_risk + 0.3 * row["年化波動度"] + 0.3 * row["最大回撤"]
     return round(score,3)
@@ -123,19 +122,27 @@ market_react = cols[3].radio("📉 市場下跌 20%", ["立即賣出","持有觀
 
 if st.button("📡 抓熱門 ETF"):
     top_etfs = fetch_top_etf_by_volume(15)
-    st.write("📈 成交量排行熱門 ETF（前 15）:", top_etfs)
+    if top_etfs:
+        st.write("📈 成交量排行熱門 ETF（前 15）:", top_etfs)
+    else:
+        st.warning("⚠️ 無法取得熱門 ETF，請確認 lxml/html5lib 已安裝或網路正常")
 
 if st.button("🚀 計算並推薦 ETF"):
     top_etfs = fetch_top_etf_by_volume(15)
-    etfs = build_etf_dataframe(top_etfs)
-    etfs["ETF 風險指數"] = etfs.apply(compute_etf_risk_index, axis=1)
-    theta = calculate_theta(age, horizon, loss_tol, market_react)
-    etfs["與投資人距離"] = (etfs["ETF 風險指數"] - theta).abs()
+    if not top_etfs:
+        st.error("❌ 無法取得熱門 ETF，請先安裝 lxml/html5lib，或確認網路連線")
+    else:
+        etfs = build_etf_dataframe(top_etfs)
+        if etfs.empty:
+            st.warning("⚠️ ETF DataFrame 為空，無法計算")
+        else:
+            etfs["ETF 風險指數"] = etfs.apply(compute_etf_risk_index, axis=1)
+            theta = calculate_theta(age, horizon, loss_tol, market_react)
+            etfs["與投資人距離"] = (etfs["ETF 風險指數"] - theta).abs()
+            st.subheader(f"📊 投資人 θ 值：{theta}")
+            st.dataframe(
+                etfs.sort_values("與投資人距離").head(TOP_N),
+                use_container_width=True
+            )
 
-    st.subheader(f"📊 投資人 θ 值：{theta}")
-    st.dataframe(
-        etfs.sort_values("與投資人距離").head(TOP_N),
-        use_container_width=True
-    )
-
-st.info("📌 資料來源：Yahoo 奇摩股市成交量排行｜歷史價格來源 Yahoo Finance")
+st.info("📌 資料來源：Yahoo 奇摩股市成交量排行｜歷史價格來源 Yahoo Finance｜僅供參考，投資需自負風險")
