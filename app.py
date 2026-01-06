@@ -13,6 +13,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
+from datetime import datetime, timedelta
 
 # ===============================
 # 0️⃣ 系統設定
@@ -21,25 +22,35 @@ CACHE_TTL = 300
 TOP_N = 5
 TRADING_DAYS = 252
 
-# 預設熱門台股 ETF 名單（若抓不到成交量會 fallback 用這個）
-ETF_CODES = [
-    "0050.TW", "0056.TW", "006208.TW", "00713.TW",
-    "00878.TW", "00692.TW", "00900.TW", "00695B.TW",
-    "00794B.TW", "00772B.TW", "00757.TW"
-]
+# ===============================
+# 1️⃣ ETF 型態 mapping
+# ===============================
+ETF_TYPE_MAPPING = {
+    "0050.TW": "股票型",
+    "0056.TW": "高股息型",
+    "006208.TW": "股票型",
+    "00713.TW": "高股息型",
+    "00878.TW": "高股息型",
+    "00692.TW": "股票型",
+    "00900.TW": "高股息型",
+    "00695B.TW": "債券型",
+    "00794B.TW": "債券型",
+    "00772B.TW": "債券型",
+    "00757.TW": "股票型",
+}
+ETF_CODES = list(ETF_TYPE_MAPPING.keys())
 
 # ===============================
-# 1️⃣ 抓熱門 ETF（安全 + fallback）
+# 2️⃣ 抓熱門 ETF（成交量排序 fallback）
 # ===============================
 @st.cache_data(ttl=CACHE_TTL)
-def fetch_top_etf_by_volume(etf_list, top_n=5):
+def fetch_top_etf_by_volume(etf_list, top_n=10):
     data = []
     for code in etf_list:
         try:
             df = yf.download(code, period="5d", progress=False)
             if df.empty or "Volume" not in df.columns:
                 continue
-            df["Volume"] = pd.to_numeric(df["Volume"], errors="coerce")
             avg_vol = df["Volume"].mean()
             if pd.isna(avg_vol) or avg_vol == 0:
                 continue
@@ -47,7 +58,6 @@ def fetch_top_etf_by_volume(etf_list, top_n=5):
         except Exception:
             continue
     if not data:
-        # fallback: 回傳預設前 top_n ETF
         return etf_list[:top_n]
     df_vol = pd.DataFrame(data, columns=["代碼", "平均成交量"])
     df_vol = df_vol.dropna(subset=["平均成交量"])
@@ -55,105 +65,135 @@ def fetch_top_etf_by_volume(etf_list, top_n=5):
     return df_vol["代碼"].tolist()[:top_n]
 
 # ===============================
-# 2️⃣ 抓 Yahoo Finance 歷史價格
+# 3️⃣ 抓取 ETF 詳細資訊（100% 防呆，用 history()）
 # ===============================
 @st.cache_data(ttl=CACHE_TTL)
-def fetch_price_history(code: str) -> pd.Series:
+def fetch_etf_info(code):
     try:
-        df = yf.download(code, period="3y", progress=False)
-        if df.empty:
-            return pd.Series(dtype=float)
-        if "Adj Close" in df.columns:
-            return df["Adj Close"].dropna()
-        return pd.Series(dtype=float)
-    except Exception:
-        return pd.Series(dtype=float)
+        ticker = yf.Ticker(code)
+        # 過去一年資料
+        history = ticker.history(period="1y", actions=True)
+        if history.empty:
+            # fallback
+            return {
+                "代碼": code,
+                "名稱": code,
+                "型態": ETF_TYPE_MAPPING.get(code, "未知型態"),
+                "即時價": 0.0,
+                "年化配息率 (%)": 0.0,
+                "最新除息金額": 0.0,
+                "最新除息日": "N/A",
+                "過去一年總報酬率 (%)": 0.0
+            }
 
-# ===============================
-# 3️⃣ 計算風險指標
-# ===============================
-def calculate_risk_metrics(price: pd.Series):
-    if price.empty or len(price) < 2:
-        return 0.0, 0.0
-    returns = price.pct_change().dropna()
-    volatility = returns.std() * np.sqrt(TRADING_DAYS)
-    drawdown = (price / price.cummax() - 1).min()
-    return round(volatility, 4), round(abs(drawdown), 4)
+        # 即時價
+        price_now = history["Close"].iloc[-1]
 
-# ===============================
-# 4️⃣ 建立 ETF DataFrame
-# ===============================
-@st.cache_data(ttl=CACHE_TTL)
-def build_etf_dataframe(top_etfs):
-    rows = []
-    for code in top_etfs:
-        price = fetch_price_history(code)
-        vol, mdd = calculate_risk_metrics(price)
-        rows.append({
+        # 股息資料
+        if "Dividends" in history.columns:
+            dividends = history["Dividends"]
+            total_div = dividends.sum()
+            div_ann = total_div * (TRADING_DAYS / len(history))  # 年化
+            # 最新除息
+            recent_div = dividends[dividends>0]
+            if not recent_div.empty:
+                latest_div_value = recent_div.iloc[-1]
+                latest_div_date = recent_div.index[-1].strftime("%Y-%m-%d")
+            else:
+                latest_div_value = 0.0
+                latest_div_date = "N/A"
+        else:
+            total_div = 0.0
+            div_ann = 0.0
+            latest_div_value = 0.0
+            latest_div_date = "N/A"
+
+        # 過去一年總報酬率 = (最後收盤 + 累積股息) / 一年前收盤 - 1
+        price_1y_ago = history["Close"].iloc[0]
+        total_return = (price_now + total_div) / price_1y_ago - 1
+        total_return = round(total_return * 100, 2)
+
+        return {
             "代碼": code,
-            "年化波動度": vol,
-            "最大回撤": mdd
-        })
-    df = pd.DataFrame(rows)
-    df.fillna(0, inplace=True)
-    return df
+            "名稱": code,
+            "型態": ETF_TYPE_MAPPING.get(code, "未知型態"),
+            "即時價": round(price_now, 2),
+            "年化配息率 (%)": round(div_ann / price_1y_ago * 100, 2),
+            "最新除息金額": round(latest_div_value, 2),
+            "最新除息日": latest_div_date,
+            "過去一年總報酬率 (%)": total_return
+        }
+    except Exception:
+        # 完全防呆
+        return {
+            "代碼": code,
+            "名稱": code,
+            "型態": ETF_TYPE_MAPPING.get(code, "未知型態"),
+            "即時價": 0.0,
+            "年化配息率 (%)": 0.0,
+            "最新除息金額": 0.0,
+            "最新除息日": "N/A",
+            "過去一年總報酬率 (%)": 0.0
+        }
 
 # ===============================
-# 5️⃣ θ-model
+# 4️⃣ θ-model
 # ===============================
-def calculate_theta(age, horizon, loss_tol, market_react):
+def calculate_theta(age, horizon, loss_tol, market_react, expected_return, expected_dividend):
     theta = (
-        -0.03 * (age - 40)
-        + 0.04 * horizon
-        + 0.05 * (loss_tol - 15)
-        + {"立即賣出": -1, "持有觀望": 0, "逢低加碼": 1.2}[market_react]
+        -0.03 * (age - 40) +
+        0.04 * horizon +
+        0.05 * (loss_tol - 15) +
+        {"立即賣出": -1, "持有觀望": 0, "逢低加碼": 1.2}[market_react] +
+        0.03 * expected_return +
+        0.02 * expected_dividend
     )
     return round(theta, 2)
 
 # ===============================
-# 6️⃣ 風險指數
+# 5️⃣ ETF 風險指數
 # ===============================
 def compute_etf_risk_index(row):
-    type_risk = 0.6  # 固定權重
-    score = 0.4 * type_risk + 0.3 * row["年化波動度"] + 0.3 * row["最大回撤"]
+    type_risk = {"債券型": 0.2, "高股息型": 0.5, "股票型": 0.8}.get(row["型態"], 0.6)
+    score = 0.4 * type_risk + 0.3 * (100 - row["過去一年總報酬率 (%)"]) * 0.01 + 0.3 * (100 - row["年化配息率 (%)"]) * 0.01
     return round(score, 3)
 
 # ===============================
-# 7️⃣ Streamlit UI
+# 6️⃣ Streamlit UI
 # ===============================
 st.set_page_config(page_title="台灣 ETF 智慧排序", layout="wide")
-st.title("📊 自動抓熱門 ETF × 風險排序推薦系統")
+st.title("📊 台灣 ETF 動態資訊 + 個人化風險排序 (100% 防呆)")
 
-cols = st.columns(4)
+# 使用者輸入
+cols = st.columns(6)
 age = cols[0].slider("👤 年齡", 20, 80, 35)
 horizon = cols[1].slider("⏳ 投資年限", 1, 40, 10)
 loss_tol = cols[2].slider("💥 最大可接受損失 (%)", 0, 50, 15)
-market_react = cols[3].radio("📉 市場下跌 20%", ["立即賣出","持有觀望","逢低加碼"])
+expected_return = cols[3].slider("🎯 預期報酬 (%)", 0, 50, 10)
+expected_dividend = cols[4].slider("💰 期望配息 (%)", 0, 50, 3)
+market_react = cols[5].radio("📉 市場下跌 20%", ["立即賣出","持有觀望","逢低加碼"])
 
 # -------------------------------
 # 抓熱門 ETF
 # -------------------------------
-if st.button("📡 抓熱門 ETF"):
+if st.button("📡 抓熱門 ETF 最新資訊"):
     top_etfs = fetch_top_etf_by_volume(ETF_CODES, top_n=10)
-    st.success(f"📈 熱門 ETF（成交量排序 / fallback）：")
-    st.write(top_etfs)
+    df_list = [fetch_etf_info(code) for code in top_etfs]
+    df = pd.DataFrame(df_list)
+    st.subheader("📈 最新熱門 ETF 資訊")
+    st.dataframe(df, use_container_width=True)
 
 # -------------------------------
 # 計算個人化推薦
 # -------------------------------
-if st.button("🚀 計算並推薦 ETF"):
+if st.button("🚀 計算個人化推薦"):
     top_etfs = fetch_top_etf_by_volume(ETF_CODES, top_n=10)
-    etfs = build_etf_dataframe(top_etfs)
-    if etfs.empty:
-        st.warning("⚠️ ETF DataFrame 為空，無法計算")
-    else:
-        etfs["ETF 風險指數"] = etfs.apply(compute_etf_risk_index, axis=1)
-        theta = calculate_theta(age, horizon, loss_tol, market_react)
-        etfs["與投資人距離"] = (etfs["ETF 風險指數"] - theta).abs()
-        st.subheader(f"📊 投資人 θ 值：{theta}")
-        st.dataframe(
-            etfs.sort_values("與投資人距離").head(TOP_N),
-            use_container_width=True
-        )
+    df_list = [fetch_etf_info(code) for code in top_etfs]
+    df = pd.DataFrame(df_list)
+    df["ETF風險指數"] = df.apply(compute_etf_risk_index, axis=1)
+    theta = calculate_theta(age, horizon, loss_tol, market_react, expected_return, expected_dividend)
+    df["與投資人距離"] = (df["ETF風險指數"] - theta).abs()
+    st.subheader(f"📊 投資人 θ 值：{theta}")
+    st.dataframe(df.sort_values("與投資人距離").head(TOP_N), use_container_width=True)
 
-st.info("📌 資料來源：Yahoo Finance｜歷史價格及成交量｜僅供參考，投資需自負風險")
+st.info("📌 資料來源：Yahoo Finance｜僅供參考，投資需自負風險")
