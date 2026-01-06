@@ -29,7 +29,7 @@ ETF_CODES = [
 ]
 
 # ===============================
-# 1️⃣ 抓熱門 ETF（過去成交量排序）
+# 1️⃣ 抓熱門 ETF（安全版：成交量排序）
 # ===============================
 @st.cache_data(ttl=CACHE_TTL)
 def fetch_top_etf_by_volume(etf_list, top_n=5):
@@ -37,15 +37,20 @@ def fetch_top_etf_by_volume(etf_list, top_n=5):
     for code in etf_list:
         try:
             df = yf.download(code, period="5d", progress=False)
-            if df.empty:
+            if df.empty or "Volume" not in df.columns:
                 continue
+            # 確保 Volume 是數值型態
+            df["Volume"] = pd.to_numeric(df["Volume"], errors="coerce")
             avg_vol = df["Volume"].mean()
+            if pd.isna(avg_vol) or avg_vol == 0:
+                continue
             data.append((code, avg_vol))
         except Exception:
             continue
     if not data:
         return []
     df_vol = pd.DataFrame(data, columns=["代碼", "平均成交量"])
+    df_vol = df_vol.dropna(subset=["平均成交量"])
     df_vol = df_vol.sort_values("平均成交量", ascending=False)
     return df_vol["代碼"].tolist()[:top_n]
 
@@ -73,7 +78,7 @@ def calculate_risk_metrics(price: pd.Series):
     returns = price.pct_change().dropna()
     volatility = returns.std() * np.sqrt(TRADING_DAYS)
     drawdown = (price / price.cummax() - 1).min()
-    return round(volatility,4), round(abs(drawdown),4)
+    return round(volatility, 4), round(abs(drawdown), 4)
 
 # ===============================
 # 4️⃣ 建立 ETF DataFrame
@@ -111,7 +116,7 @@ def calculate_theta(age, horizon, loss_tol, market_react):
 def compute_etf_risk_index(row):
     type_risk = 0.6  # 固定權重
     score = 0.4 * type_risk + 0.3 * row["年化波動度"] + 0.3 * row["最大回撤"]
-    return round(score,3)
+    return round(score, 3)
 
 # ===============================
 # 7️⃣ Streamlit UI
@@ -125,7 +130,7 @@ horizon = cols[1].slider("⏳ 投資年限", 1, 40, 10)
 loss_tol = cols[2].slider("💥 最大可接受損失 (%)", 0, 50, 15)
 market_react = cols[3].radio("📉 市場下跌 20%", ["立即賣出","持有觀望","逢低加碼"])
 
-# 抓熱門 ETF
+# 按鈕：抓熱門 ETF
 if st.button("📡 抓熱門 ETF"):
     top_etfs = fetch_top_etf_by_volume(ETF_CODES, top_n=10)
     if top_etfs:
@@ -134,7 +139,7 @@ if st.button("📡 抓熱門 ETF"):
     else:
         st.error("❌ 無法取得熱門 ETF，請確認網路正常或稍後再試")
 
-# 計算並推薦
+# 按鈕：計算個人化推薦
 if st.button("🚀 計算並推薦 ETF"):
     top_etfs = fetch_top_etf_by_volume(ETF_CODES, top_n=10)
     if not top_etfs:
