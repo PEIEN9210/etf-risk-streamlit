@@ -14,132 +14,127 @@ import numpy as np
 import yfinance as yf
 
 # ===============================
-# 0️⃣ 系統設定（集中管理）
+# 0️⃣ 系統設定
 # ===============================
 CACHE_TTL = 300
 TOP_N = 5
+TRADING_DAYS = 252
 
 # ===============================
-# 1️⃣ ETF 靜態資料（Single Source）
+# 1️⃣ ETF 靜態資料
 # ===============================
 ETF_BASE_INFO = {
-    '0050': ('元大台灣50', '股票型', 3.3, '2025/07/15', 1.7, 18.2),
-    '006208': ('富邦台50', '股票型', 3.5, '2025/07/20', 1.8, 17.8),
-    '00713': ('元大台灣高息低波', '高股息型', 9.8, '2025/06/30', 5.28, 25.4),
-    '00878': ('國泰永續高股息', '高股息型', 8.5, '2025/08/10', 2.01, 28.1),
-    '0056': ('元大高股息', '高股息型', 7.2, '2025/08/01', 3.63, 19.6),
-    '00692': ('富邦台灣公司治理100', '股票型', 6.5, '2025/09/15', 1.5, 22.3),
-    '00900': ('富邦特選高股息30', '高股息型', 9.5, '2025/07/15', 1.21, 26.8),
-    '00695B': ('富邦美債7-10年', '債券型', 3.2, '2025/12/15', 0.8, 4.2),
-    '00794B': ('群益7+中國政金債', '債券型', 3.5, '2025/12/20', 0.9, 4.8),
-    '00772B': ('中信高評級公司債', '債券型', 4.0, '2025/11/01', 1.0, 5.1),
-    '00757': ('統一FANG+', '股票型', 0.5, '2025/03/01', 0.1, 45.0)
+    '0050': ('元大台灣50', '股票型', 3.3),
+    '006208': ('富邦台50', '股票型', 3.5),
+    '00713': ('元大台灣高息低波', '高股息型', 9.8),
+    '00878': ('國泰永續高股息', '高股息型', 8.5),
+    '0056': ('元大高股息', '高股息型', 7.2),
+    '00692': ('富邦公司治理100', '股票型', 6.5),
+    '00900': ('富邦特選高股息30', '高股息型', 9.5),
+    '00695B': ('富邦美債7-10年', '債券型', 3.2),
+    '00794B': ('群益中國政金債', '債券型', 3.5),
+    '00772B': ('中信投資級公司債', '債券型', 4.0),
+    '00757': ('統一FANG+', '股票型', 0.5),
 }
 
 # ===============================
-# 2️⃣ 即時價格（Yahoo Finance）
+# 2️⃣ 抓 Yahoo Finance 歷史資料
 # ===============================
 @st.cache_data(ttl=CACHE_TTL)
-def fetch_latest_price(code: str) -> float:
-    try:
-        data = yf.Ticker(f"{code}.TW").history(period="5d")
-        return float(data['Close'].iloc[-1]) if not data.empty else np.nan
-    except Exception:
-        return np.nan
+def fetch_price_history(code: str) -> pd.Series:
+    data = yf.download(f"{code}.TW", period="3y", progress=False)
+    if data.empty:
+        return pd.Series(dtype=float)
+    return data["Adj Close"].dropna()
 
 # ===============================
-# 3️⃣ ETF 整合資料表
+# 3️⃣ 風險指標計算
+# ===============================
+def calculate_risk_metrics(price: pd.Series):
+    returns = price.pct_change().dropna()
+    if returns.empty:
+        return np.nan, np.nan
+
+    volatility = returns.std() * np.sqrt(TRADING_DAYS)
+    drawdown = (price / price.cummax() - 1).min()
+    return volatility, abs(drawdown)
+
+# ===============================
+# 4️⃣ 建立 ETF DataFrame（即時）
 # ===============================
 @st.cache_data(ttl=CACHE_TTL)
-def build_etf_dataframe() -> pd.DataFrame:
+def build_etf_dataframe():
     rows = []
 
-    for code, info in ETF_BASE_INFO.items():
-        price = fetch_latest_price(code)
-        name, etf_type, div_yield, ex_date, div_amt, total_ret = info
+    for code, (name, etf_type, div_yield) in ETF_BASE_INFO.items():
+        price = fetch_price_history(code)
+        vol, mdd = calculate_risk_metrics(price)
 
         rows.append({
             "代碼": code,
             "名稱": name,
             "型態": etf_type,
-            "即時報價": f"NT${price:.2f}" if not np.isnan(price) else "暫無資料",
-            "配息率數值": div_yield,
-            "年化配息率": f"{div_yield}%",
-            "最新除息日": ex_date,
-            "最新除息金額": f"NT${div_amt}",
-            "總報酬數值": total_ret,
-            "近一年總報酬": f"{total_ret}%"
+            "配息率": div_yield,
+            "年化波動度": vol,
+            "最大回撤": mdd
         })
 
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows).dropna()
+    return df
 
 # ===============================
-# 4️⃣ 行為風險模型（θ-model）
+# 5️⃣ 行為金融 θ-model
 # ===============================
-def calculate_risk_score(age, horizon, loss_tol, volatility, expected_return, dividend_yield):
+def calculate_theta(age, horizon, loss_tol, market_react):
     theta = (
         -0.03 * (age - 40)
         + 0.04 * horizon
         + 0.05 * (loss_tol - 15)
-        + {"立即賣出": -1.0, "持有觀望": 0.0, "逢低加碼": 1.2}.get(volatility, 0)
-        + 0.03 * (expected_return - 6)
-        - 0.04 * (dividend_yield - 3)
+        + {"立即賣出": -1, "持有觀望": 0, "逢低加碼": 1.2}[market_react]
     )
-
-    level = "🟢保守型" if theta < -0.5 else "🟡平衡型" if theta < 0.8 else "🔴積極型"
-    score = int(np.clip((theta + 2) * 2.5, 0, 10))
-
-    return {"theta": round(theta, 2), "score": score, "level": level}
+    return round(theta, 2)
 
 # ===============================
-# 5️⃣ ETF 風險指數
+# 6️⃣ MCDA ETF 風險指數
 # ===============================
 def compute_etf_risk_index(row):
-    base = {"債券型": 0.2, "高股息型": 0.5, "股票型": 0.8}.get(row["型態"], 0.9)
-    return round(
-        0.6 * base
-        - 0.2 * (row["配息率數值"] / 10)
-        + 0.2 * (row["總報酬數值"] / 30),
-        2
+    type_risk = {"債券型": 0.2, "高股息型": 0.5, "股票型": 0.8}.get(row["型態"], 0.9)
+
+    score = (
+        0.4 * type_risk +
+        0.3 * row["年化波動度"] +
+        0.3 * row["最大回撤"]
     )
+    return round(score, 3)
 
 # ===============================
-# 6️⃣ Streamlit UI
+# 7️⃣ Streamlit UI
 # ===============================
-st.title("🏆 台灣 ETF 即時資料智慧評估系統")
+st.title("🏆 台灣 ETF 即時風險 × MCDA 智慧排序系統")
 
-if st.button("📡 重新抓取資料"):
+if st.button("📡 重新抓取 Yahoo Finance"):
     st.cache_data.clear()
     st.rerun()
 
-cols = st.columns([1,1,1,1,1,2])
+cols = st.columns(4)
 age = cols[0].slider("👤 年齡", 20, 80, 35)
 horizon = cols[1].slider("⏳ 投資年限", 1, 40, 10)
 loss_tol = cols[2].slider("💥 最大可接受損失 (%)", 0, 50, 15)
-expected_return = cols[3].slider("🎯 預期報酬 (%)", 2, 15, 6)
-dividend_yield = cols[4].slider("💰 期望配息 (%)", 1, 8, 3)
-volatility = cols[5].radio("📉 市場下跌 20%", ["立即賣出","持有觀望","逢低加碼"], horizontal=True)
+market_react = cols[3].radio("📉 市場下跌 20%", ["立即賣出","持有觀望","逢低加碼"])
 
-if st.button("🚀 ETF 智慧配對"):
-    st.session_state.result = calculate_risk_score(
-        age, horizon, loss_tol, volatility, expected_return, dividend_yield
-    )
-
-if "result" in st.session_state:
-    result = st.session_state.result
-    st.subheader("📊 投資人風險輪廓")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("風險等級", result["level"])
-    c2.metric("θ 值", result["theta"])
-    c3.metric("總分數", f'{result["score"]}/10')
+if st.button("🚀 計算 ETF 排序"):
+    theta = calculate_theta(age, horizon, loss_tol, market_react)
 
     etfs = build_etf_dataframe()
     etfs["ETF風險指數"] = etfs.apply(compute_etf_risk_index, axis=1)
-    etfs["距離"] = (etfs["ETF風險指數"] - result["theta"]).abs()
+    etfs["與投資人距離"] = (etfs["ETF風險指數"] - theta).abs()
 
-    st.subheader("🎯 Top ETF 建議")
-    st.table(etfs.sort_values("距離").head(TOP_N)[
-        ["代碼","名稱","型態","即時報價","年化配息率","近一年總報酬","ETF風險指數"]
-    ])
+    st.subheader(f"📊 投資人 θ 值：{theta}")
+    st.subheader("🎯 Top ETF 建議（MCDA 排序）")
 
-st.info("📌 資料來源：Yahoo Finance｜每 5 分鐘自動更新")
+    st.dataframe(
+        etfs.sort_values("與投資人距離").head(TOP_N),
+        use_container_width=True
+    )
+
+st.info("📌 資料來源：Yahoo Finance｜風險指標為本研究自行計算")
