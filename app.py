@@ -21,7 +21,7 @@ CACHE_TTL = 300
 TOP_N = 5
 TRADING_DAYS = 252
 
-# 常用台股 ETF 名單（可擴充）
+# 預設熱門台股 ETF 名單（若抓不到成交量會 fallback 用這個）
 ETF_CODES = [
     "0050.TW", "0056.TW", "006208.TW", "00713.TW",
     "00878.TW", "00692.TW", "00900.TW", "00695B.TW",
@@ -29,7 +29,7 @@ ETF_CODES = [
 ]
 
 # ===============================
-# 1️⃣ 抓熱門 ETF（安全版：成交量排序）
+# 1️⃣ 抓熱門 ETF（安全 + fallback）
 # ===============================
 @st.cache_data(ttl=CACHE_TTL)
 def fetch_top_etf_by_volume(etf_list, top_n=5):
@@ -39,7 +39,6 @@ def fetch_top_etf_by_volume(etf_list, top_n=5):
             df = yf.download(code, period="5d", progress=False)
             if df.empty or "Volume" not in df.columns:
                 continue
-            # 確保 Volume 是數值型態
             df["Volume"] = pd.to_numeric(df["Volume"], errors="coerce")
             avg_vol = df["Volume"].mean()
             if pd.isna(avg_vol) or avg_vol == 0:
@@ -48,7 +47,8 @@ def fetch_top_etf_by_volume(etf_list, top_n=5):
         except Exception:
             continue
     if not data:
-        return []
+        # fallback: 回傳預設前 top_n ETF
+        return etf_list[:top_n]
     df_vol = pd.DataFrame(data, columns=["代碼", "平均成交量"])
     df_vol = df_vol.dropna(subset=["平均成交量"])
     df_vol = df_vol.sort_values("平均成交量", ascending=False)
@@ -60,11 +60,11 @@ def fetch_top_etf_by_volume(etf_list, top_n=5):
 @st.cache_data(ttl=CACHE_TTL)
 def fetch_price_history(code: str) -> pd.Series:
     try:
-        data = yf.download(code, period="3y", progress=False)
-        if data.empty:
+        df = yf.download(code, period="3y", progress=False)
+        if df.empty:
             return pd.Series(dtype=float)
-        if "Adj Close" in data.columns:
-            return data["Adj Close"].dropna()
+        if "Adj Close" in df.columns:
+            return df["Adj Close"].dropna()
         return pd.Series(dtype=float)
     except Exception:
         return pd.Series(dtype=float)
@@ -130,32 +130,30 @@ horizon = cols[1].slider("⏳ 投資年限", 1, 40, 10)
 loss_tol = cols[2].slider("💥 最大可接受損失 (%)", 0, 50, 15)
 market_react = cols[3].radio("📉 市場下跌 20%", ["立即賣出","持有觀望","逢低加碼"])
 
-# 按鈕：抓熱門 ETF
+# -------------------------------
+# 抓熱門 ETF
+# -------------------------------
 if st.button("📡 抓熱門 ETF"):
     top_etfs = fetch_top_etf_by_volume(ETF_CODES, top_n=10)
-    if top_etfs:
-        st.success(f"📈 成交量排行熱門 ETF（前 {len(top_etfs)}）:")
-        st.write(top_etfs)
-    else:
-        st.error("❌ 無法取得熱門 ETF，請確認網路正常或稍後再試")
+    st.success(f"📈 熱門 ETF（成交量排序 / fallback）：")
+    st.write(top_etfs)
 
-# 按鈕：計算個人化推薦
+# -------------------------------
+# 計算個人化推薦
+# -------------------------------
 if st.button("🚀 計算並推薦 ETF"):
     top_etfs = fetch_top_etf_by_volume(ETF_CODES, top_n=10)
-    if not top_etfs:
-        st.error("❌ 無法取得熱門 ETF，請確認網路正常或稍後再試")
+    etfs = build_etf_dataframe(top_etfs)
+    if etfs.empty:
+        st.warning("⚠️ ETF DataFrame 為空，無法計算")
     else:
-        etfs = build_etf_dataframe(top_etfs)
-        if etfs.empty:
-            st.warning("⚠️ ETF DataFrame 為空，無法計算")
-        else:
-            etfs["ETF 風險指數"] = etfs.apply(compute_etf_risk_index, axis=1)
-            theta = calculate_theta(age, horizon, loss_tol, market_react)
-            etfs["與投資人距離"] = (etfs["ETF 風險指數"] - theta).abs()
-            st.subheader(f"📊 投資人 θ 值：{theta}")
-            st.dataframe(
-                etfs.sort_values("與投資人距離").head(TOP_N),
-                use_container_width=True
-            )
+        etfs["ETF 風險指數"] = etfs.apply(compute_etf_risk_index, axis=1)
+        theta = calculate_theta(age, horizon, loss_tol, market_react)
+        etfs["與投資人距離"] = (etfs["ETF 風險指數"] - theta).abs()
+        st.subheader(f"📊 投資人 θ 值：{theta}")
+        st.dataframe(
+            etfs.sort_values("與投資人距離").head(TOP_N),
+            use_container_width=True
+        )
 
 st.info("📌 資料來源：Yahoo Finance｜歷史價格及成交量｜僅供參考，投資需自負風險")
