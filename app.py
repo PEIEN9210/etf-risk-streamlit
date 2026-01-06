@@ -20,47 +20,52 @@ import yfinance as yf
 CACHE_TTL = 300
 TOP_N = 5
 TRADING_DAYS = 252
-ETF_RANK_URL = "https://tw.stock.yahoo.com/tw-etf/volume"  # 成交量排行
+
+# 常用台股 ETF 名單（可擴充）
+ETF_CODES = [
+    "0050.TW", "0056.TW", "006208.TW", "00713.TW",
+    "00878.TW", "00692.TW", "00900.TW", "00695B.TW",
+    "00794B.TW", "00772B.TW", "00757.TW"
+]
 
 # ===============================
-# 1️⃣ 抓熱門 ETF（成交量排行）
+# 1️⃣ 抓熱門 ETF（過去成交量排序）
 # ===============================
 @st.cache_data(ttl=CACHE_TTL)
-def fetch_top_etf_by_volume(limit=15):
-    try:
-        tables = pd.read_html(ETF_RANK_URL)
-        if not tables:
-            return []
-        df = tables[0]
-        df["代碼"] = df.iloc[:, 1].astype(str).str.extract(r"([0-9]{3,5})")[0]
-        df = df.dropna(subset=["代碼"])
-        return df["代碼"].unique()[:limit].tolist()
-    except ImportError as e:
-        st.error("❌ 讀取 ETF 排行表需要 lxml/html5lib，請安裝套件：pip install lxml html5lib")
+def fetch_top_etf_by_volume(etf_list, top_n=5):
+    data = []
+    for code in etf_list:
+        try:
+            df = yf.download(code, period="5d", progress=False)
+            if df.empty:
+                continue
+            avg_vol = df["Volume"].mean()
+            data.append((code, avg_vol))
+        except Exception:
+            continue
+    if not data:
         return []
-    except Exception as e:
-        st.warning(f"⚠️ 取得熱門 ETF 失敗：{e}")
-        return []
+    df_vol = pd.DataFrame(data, columns=["代碼", "平均成交量"])
+    df_vol = df_vol.sort_values("平均成交量", ascending=False)
+    return df_vol["代碼"].tolist()[:top_n]
 
 # ===============================
-# 2️⃣ 抓 Yahoo Finance 歷史資料
+# 2️⃣ 抓 Yahoo Finance 歷史價格
 # ===============================
 @st.cache_data(ttl=CACHE_TTL)
 def fetch_price_history(code: str) -> pd.Series:
     try:
-        data = yf.download(f"{code}.TW", period="3y", progress=False)
+        data = yf.download(code, period="3y", progress=False)
         if data.empty:
             return pd.Series(dtype=float)
         if "Adj Close" in data.columns:
             return data["Adj Close"].dropna()
-        elif ("Adj Close", "") in data.columns:
-            return data[("Adj Close","")].dropna()
         return pd.Series(dtype=float)
     except Exception:
         return pd.Series(dtype=float)
 
 # ===============================
-# 3️⃣ 風險指標計算
+# 3️⃣ 計算風險指標
 # ===============================
 def calculate_risk_metrics(price: pd.Series):
     if price.empty or len(price) < 2:
@@ -104,7 +109,7 @@ def calculate_theta(age, horizon, loss_tol, market_react):
 # 6️⃣ 風險指數
 # ===============================
 def compute_etf_risk_index(row):
-    type_risk = 0.6
+    type_risk = 0.6  # 固定權重
     score = 0.4 * type_risk + 0.3 * row["年化波動度"] + 0.3 * row["最大回撤"]
     return round(score,3)
 
@@ -120,17 +125,20 @@ horizon = cols[1].slider("⏳ 投資年限", 1, 40, 10)
 loss_tol = cols[2].slider("💥 最大可接受損失 (%)", 0, 50, 15)
 market_react = cols[3].radio("📉 市場下跌 20%", ["立即賣出","持有觀望","逢低加碼"])
 
+# 抓熱門 ETF
 if st.button("📡 抓熱門 ETF"):
-    top_etfs = fetch_top_etf_by_volume(15)
+    top_etfs = fetch_top_etf_by_volume(ETF_CODES, top_n=10)
     if top_etfs:
-        st.write("📈 成交量排行熱門 ETF（前 15）:", top_etfs)
+        st.success(f"📈 成交量排行熱門 ETF（前 {len(top_etfs)}）:")
+        st.write(top_etfs)
     else:
-        st.warning("⚠️ 無法取得熱門 ETF，請確認 lxml/html5lib 已安裝或網路正常")
+        st.error("❌ 無法取得熱門 ETF，請確認網路正常或稍後再試")
 
+# 計算並推薦
 if st.button("🚀 計算並推薦 ETF"):
-    top_etfs = fetch_top_etf_by_volume(15)
+    top_etfs = fetch_top_etf_by_volume(ETF_CODES, top_n=10)
     if not top_etfs:
-        st.error("❌ 無法取得熱門 ETF，請先安裝 lxml/html5lib，或確認網路連線")
+        st.error("❌ 無法取得熱門 ETF，請確認網路正常或稍後再試")
     else:
         etfs = build_etf_dataframe(top_etfs)
         if etfs.empty:
@@ -145,4 +153,4 @@ if st.button("🚀 計算並推薦 ETF"):
                 use_container_width=True
             )
 
-st.info("📌 資料來源：Yahoo 奇摩股市成交量排行｜歷史價格來源 Yahoo Finance｜僅供參考，投資需自負風險")
+st.info("📌 資料來源：Yahoo Finance｜歷史價格及成交量｜僅供參考，投資需自負風險")
