@@ -149,7 +149,7 @@ if st.button("🚀 計算個人化推薦"):
     beta = 5.0
     df["personal_score"] = df["sharpe_z"] - beta * abs(theta - df["ETF_risk_norm"])
     def score_to_level(s):
-        if s > 1.0: return "🔥很好"
+        if s > 1.0: return "🔥積極"
         elif s > 0.5: return "🟡中等"
         else: return "🟢保守"
     df["風險等級"] = df["personal_score"].apply(score_to_level)
