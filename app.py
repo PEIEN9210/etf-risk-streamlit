@@ -20,7 +20,7 @@ import altair as alt
 # 基本設定
 # ===============================
 st.set_page_config(page_title="台灣 ETF 個人化推薦系統", layout="wide")
-st.title("📊 台灣 ETF 個人化推薦（Sharpe + Beta + θ-model）")
+st.title("📊 台灣 ETF 個人化推薦（Sharpe + Beta + θ-model，投資請自負風險:）")
 
 TRADING_DAYS = 252
 RISK_FREE_RATE = 0.01  # 1%
