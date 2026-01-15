@@ -26,7 +26,7 @@ TRADING_DAYS = 252
 RISK_FREE_RATE = 0.01  # 1%
 
 # ===============================
-# ETF Universe（穩定來源）
+# ETF Universe（穩定）
 # ===============================
 ETF_LIST = {
     "0050.TW": "股票型",
@@ -41,7 +41,7 @@ ETF_LIST = {
 MARKET_BENCHMARK = "0050.TW"
 
 # ===============================
-# 抓 ETF 價格資料
+# 抓價格資料
 # ===============================
 @st.cache_data(ttl=3600)
 def fetch_price_data(code):
@@ -51,35 +51,32 @@ def fetch_price_data(code):
     return df
 
 # ===============================
-# 計算 Sharpe / Beta
+# Sharpe / Beta
 # ===============================
 def calc_metrics(df, market_df):
-    returns = df["Close"].pct_change().dropna()
-    market_returns = market_df["Close"].pct_change().dropna()
+    r = df["Close"].pct_change().dropna()
+    mr = market_df["Close"].pct_change().dropna()
 
-    common = returns.index.intersection(market_returns.index)
-    returns = returns.loc[common]
-    market_returns = market_returns.loc[common]
+    idx = r.index.intersection(mr.index)
+    r, mr = r.loc[idx], mr.loc[idx]
 
-    ann_return = returns.mean() * TRADING_DAYS
-    ann_vol = returns.std() * np.sqrt(TRADING_DAYS)
+    ann_ret = r.mean() * TRADING_DAYS
+    ann_vol = r.std() * np.sqrt(TRADING_DAYS)
 
-    sharpe = (ann_return - RISK_FREE_RATE) / ann_vol if ann_vol != 0 else 0
+    sharpe = (ann_ret - RISK_FREE_RATE) / ann_vol if ann_vol > 0 else 0
+    beta = np.cov(r, mr)[0, 1] / np.var(mr)
 
-    beta = np.cov(returns, market_returns)[0, 1] / np.var(market_returns)
-
-    return ann_return * 100, ann_vol * 100, sharpe, beta
+    return ann_ret * 100, ann_vol * 100, sharpe, beta
 
 # ===============================
-# θ-model（標準化）
+# θ-model（行為金融）
 # ===============================
 def calc_theta(age, horizon, loss_tol, reaction):
     score = 0
-    score += (80 - age) / 60          # 年輕 → 風險高
+    score += (80 - age) / 60
     score += horizon / 30
     score += loss_tol / 50
-    score += {"賣出":0, "觀望":0.5, "加碼":1}[reaction]
-
+    score += {"賣出": 0, "觀望": 0.5, "加碼": 1}[reaction]
     return np.clip(score / 4, 0, 1)
 
 # ===============================
@@ -90,17 +87,16 @@ st.sidebar.header("👤 投資人風險設定")
 age = st.sidebar.slider("年齡", 20, 80, 35)
 horizon = st.sidebar.slider("投資年限（年）", 1, 30, 10)
 loss_tol = st.sidebar.slider("可接受最大損失 (%)", 0, 50, 20)
-reaction = st.sidebar.radio("市場下跌 20% 時", ["賣出","觀望","加碼"])
+reaction = st.sidebar.radio("市場下跌 20% 時", ["賣出", "觀望", "加碼"])
 
 theta = calc_theta(age, horizon, loss_tol, reaction)
 st.sidebar.metric("θ（風險偏好指數）", round(theta, 2))
 
 # ===============================
-# 主資料計算
+# 主計算（學術適配）
 # ===============================
-data = []
-
 market_df = fetch_price_data(MARKET_BENCHMARK)
+rows = []
 
 for etf, etf_type in ETF_LIST.items():
     df = fetch_price_data(etf)
@@ -109,59 +105,47 @@ for etf, etf_type in ETF_LIST.items():
 
     ann_ret, ann_vol, sharpe, beta = calc_metrics(df, market_df)
 
-    risk_profile = 0.6 * (ann_vol / 40) + 0.4 * (abs(beta - 1))
-    risk_profile = np.clip(risk_profile, 0, 1)
+    # ===== 投資人理想條件（θ 錨點）=====
+    expected_return = 5 + theta * 20        # 5% ~ 25%
+    acceptable_vol = 10 + theta * 25         # 10% ~ 35%
+    ideal_beta = 0.7 + theta * 0.8           # 0.7 ~ 1.5
 
-    personal_score = sharpe - abs(theta - risk_profile)
+    # ===== 適配度（0~1）=====
+    sharpe_fit = min(sharpe / 3, 1)
 
-    data.append({
+    return_fit = 1 - abs(ann_ret - expected_return) / expected_return
+    return_fit = np.clip(return_fit, 0, 1)
+
+    vol_fit = 1 - ann_vol / acceptable_vol
+    vol_fit = np.clip(vol_fit, 0, 1)
+
+    beta_fit = 1 - abs(beta - ideal_beta) / ideal_beta
+    beta_fit = np.clip(beta_fit, 0, 1)
+
+    personal_score = np.mean([sharpe_fit, return_fit, vol_fit, beta_fit])
+
+    rows.append({
         "ETF": etf,
         "類型": etf_type,
         "最新價": round(df["Close"].iloc[-1], 2),
-        "年化報酬%": round(ann_ret, 2),
-        "年化波動%": round(ann_vol, 2),
         "Sharpe": round(sharpe, 2),
         "Beta": round(beta, 2),
-        "ETF風險輪廓": round(risk_profile, 2),
-        "θ偏離": round(abs(theta - risk_profile), 2),
+        "年化報酬%": round(ann_ret, 2),
+        "年化波動%": round(ann_vol, 2),
+        "Sharpe適配": round(sharpe_fit, 2),
+        "報酬適配": round(return_fit, 2),
+        "波動適配": round(vol_fit, 2),
+        "Beta適配": round(beta_fit, 2),
         "個人化分數": round(personal_score, 3)
     })
 
-df_all = pd.DataFrame(data).sort_values("個人化分數", ascending=False)
+df_all = pd.DataFrame(rows).sort_values("個人化分數", ascending=False)
 
 # ===============================
-# 熱門 ETF（一定顯示）
-# ===============================
-st.subheader("🔥 市場熱門 ETF（Sharpe 排序）")
-st.dataframe(
-    df_all.sort_values("Sharpe", ascending=False)
-    [["ETF","類型","最新價","Sharpe","Beta","年化報酬%","年化波動%"]],
-    use_container_width=True
-)
-
-# ===============================
-# 個人化推薦
+# 表格
 # ===============================
 st.subheader("🎯 個人化 ETF 推薦排序")
-st.dataframe(
-    df_all[["ETF","類型","個人化分數","Sharpe","Beta","θ偏離"]],
-    use_container_width=True
-)
-
-# ===============================
-# 氣泡圖（Sharpe × θ × Beta）
-# ===============================
-st.subheader("🫧 ETF 個人化視覺化")
-
-bubble = alt.Chart(df_all).mark_circle(opacity=0.7).encode(
-    x="Sharpe:Q",
-    y="θ偏離:Q",
-    size=alt.Size("Beta:Q", scale=alt.Scale(range=[100, 1500])),
-    color="類型:N",
-    tooltip=["ETF","Sharpe","Beta","θ偏離"]
-)
-
-st.altair_chart(bubble, use_container_width=True)
+st.dataframe(df_all, use_container_width=True)
 
 # ===============================
 # 雷達圖（真正「個人化」）
@@ -220,3 +204,47 @@ text = alt.Chart(labels).mark_text(fontSize=12).encode(
 )
 
 st.altair_chart(area + line + text, use_container_width=True)
+
+# ===============================
+# 氣泡圖（Sharpe × θ 適配 × Beta）
+# ===============================
+st.subheader("🫧 ETF 個人化氣泡圖（Sharpe × θ 偏離 × Beta）")
+
+bubble_df = df_all.copy()
+
+bubble = alt.Chart(bubble_df).mark_circle(
+    opacity=0.7,
+    stroke="black",
+    strokeWidth=0.5
+).encode(
+    x=alt.X(
+        "Sharpe:Q",
+        title="Sharpe Ratio（風險調整後報酬）",
+        scale=alt.Scale(zero=False)
+    ),
+    y=alt.Y(
+        "個人化分數:Q",
+        title="個人化適配分數（越高越適合）",
+        scale=alt.Scale(zero=True)
+    ),
+    size=alt.Size(
+        "Beta:Q",
+        title="Beta（系統性風險）",
+        scale=alt.Scale(range=[100, 1600])
+    ),
+    color=alt.Color(
+        "類型:N",
+        title="ETF 類型"
+    ),
+    tooltip=[
+        "ETF",
+        "Sharpe",
+        "Beta",
+        "年化報酬%",
+        "年化波動%",
+        "個人化分數"
+    ]
+)
+
+st.altair_chart(bubble, use_container_width=True)
+
