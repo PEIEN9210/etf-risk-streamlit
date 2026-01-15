@@ -164,12 +164,13 @@ bubble = alt.Chart(df_all).mark_circle(opacity=0.7).encode(
 st.altair_chart(bubble, use_container_width=True)
 
 # ===============================
-# 雷達圖（Top 3）
+# 雷達圖（真正「個人化」）
 # ===============================
-st.subheader("📡 Top 3 ETF 雷達圖")
+st.subheader("📡 Top 3 ETF 個人化雷達圖（適配度）")
 
 top3 = df_all.head(3)
-metrics = ["Sharpe","年化報酬%","年化波動%","Beta"]
+
+metrics = ["Sharpe適配", "報酬適配", "波動適配", "Beta適配"]
 
 radar = top3.melt(
     id_vars="ETF",
@@ -178,27 +179,44 @@ radar = top3.melt(
     value_name="值"
 )
 
-angle_map = {
-    m: i * 2 * np.pi / len(metrics)
-    for i, m in enumerate(metrics)
-}
+radar["order"] = radar["指標"].map({m: i for i, m in enumerate(metrics)})
+radar["角度"] = radar["order"] * 2 * np.pi / len(metrics)
 
-radar["角度"] = radar["指標"].map(angle_map)
+radar["x"] = radar["值"] * np.cos(radar["角度"])
+radar["y"] = radar["值"] * np.sin(radar["角度"])
 
-radar = pd.concat([radar, radar.groupby("ETF").head(1)])
-
-radar_chart = alt.Chart(radar).mark_line().encode(
-    theta="角度:Q",
-    radius=alt.Radius("值:Q", scale=alt.Scale(zero=True)),
-    color="ETF:N"
+radar_closed = pd.concat(
+    [radar, radar.groupby("ETF").apply(lambda d: d.iloc[[0]]).reset_index(drop=True)],
+    ignore_index=True
 )
 
-radar_points = alt.Chart(radar).mark_point(size=60).encode(
-    theta="角度:Q",
-    radius="值:Q",
-    color="ETF:N"
+area = alt.Chart(radar_closed).mark_area(opacity=0.3).encode(
+    x=alt.X("x:Q", axis=None),
+    y=alt.Y("y:Q", axis=None),
+    color="ETF:N",
+    detail="ETF:N",
+    order="order:Q",
+    tooltip=["ETF", "指標", "值"]
 )
 
-st.altair_chart(radar_chart + radar_points, use_container_width=True)
+line = alt.Chart(radar_closed).mark_line().encode(
+    x="x:Q",
+    y="y:Q",
+    color="ETF:N",
+    detail="ETF:N",
+    order="order:Q"
+)
 
-st.caption("📚 Sharpe (1966), CAPM, 行為風險匹配模型｜資料來源：Yahoo Finance")
+labels = pd.DataFrame({
+    "指標": metrics,
+    "x": [1.2 * np.cos(i * 2 * np.pi / len(metrics)) for i in range(len(metrics))],
+    "y": [1.2 * np.sin(i * 2 * np.pi / len(metrics)) for i in range(len(metrics))]
+})
+
+text = alt.Chart(labels).mark_text(fontSize=12).encode(
+    x="x:Q",
+    y="y:Q",
+    text="指標:N"
+)
+
+st.altair_chart(area + line + text, use_container_width=True)
