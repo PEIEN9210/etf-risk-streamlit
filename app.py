@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 # 基本設定
 # ===============================
 st.set_page_config(page_title="台灣 ETF 個人化推薦系統", layout="wide")
-st.title("📊 台灣 ETF 個人化 + HotIndex ETF 推薦系統 (Top N 自動更新)")
+st.title("📊 台灣 ETF 個人化 + HotIndex ETF 推薦系統 (僅供參考，不負投資風險:)")
 
 TRADING_DAYS = 252
 RISK_FREE_RATE = 0.01  # 無風險利率
@@ -44,10 +44,11 @@ MARKET_BENCHMARK = "0050.TW"
 # Sidebar：使用者設定
 # ===============================
 st.sidebar.header("👤 投資人風險設定")
-age = st.sidebar.slider("年齡", 20, 80, 35)
-horizon = st.sidebar.slider("投資年限（年）", 1, 30, 10)
-loss_tol = st.sidebar.slider("可接受最大損失 (%)", 0, 50, 20)
-reaction = st.sidebar.radio("市場下跌 20% 時", ["賣出", "觀望", "加碼"])
+age = st.sidebar.slider("年齡", 20, 80, 35, key="age_slider")
+horizon = st.sidebar.slider("投資年限（年）", 1, 30, 10, key="horizon_slider")
+loss_tol = st.sidebar.slider("可接受最大損失 (%)", 0, 50, 20, key="loss_slider")
+reaction = st.sidebar.radio("市場下跌 20% 時", ["賣出", "觀望", "加碼"], key="reaction_radio")
+
 theta = ((80-age)/60 + horizon/30 + loss_tol/50 + {"賣出":0,"觀望":0.5,"加碼":1}[reaction])/4
 theta = np.clip(theta,0,1)
 st.sidebar.metric("θ（風險偏好指數）", round(theta,2))
@@ -56,13 +57,21 @@ st.sidebar.metric("θ（風險偏好指數）", round(theta,2))
 st.sidebar.header("⚖️ 綜合分數權重")
 ALPHA = st.sidebar.slider(
     "HotIndex 權重（個人化分數權重 = 1 - HotIndex 權重）",
-    0.0, 1.0, 0.5, step=0.05
+    0.0, 1.0, 0.5, step=0.05, key="alpha_slider"
 )
 st.sidebar.write(f"HotIndex 權重: {ALPHA:.2f} | 個人化分數權重: {1-ALPHA:.2f}")
 
+# 排序選項
+st.sidebar.header("📊 排序選項")
+sort_option = st.sidebar.selectbox(
+    "選擇排序依據",
+    ["Final Score (HotIndex + 個人化)","風險適配分數（依 θ）"],
+    key="sort_option"
+)
+
 # Top N 顯示
 st.sidebar.header("📈 Top N ETF 顯示")
-TOP_N = st.sidebar.slider("Top N ETF", 1, len(ETF_LIST), 5)
+TOP_N = st.sidebar.slider("Top N ETF", 1, len(ETF_LIST), 5, key="topn_slider")
 
 # ===============================
 # 抓取價格資料（含每日自動刷新）
@@ -125,6 +134,10 @@ for etf, etf_type in ETF_LIST.items():
     return_fit = np.clip(1 - abs(ann_ret-expected_return)/expected_return,0,1)
     vol_fit = np.clip(1 - ann_vol/acceptable_vol,0,1)
     beta_fit = np.clip(1 - abs(beta-ideal_beta)/ideal_beta,0,1)
+
+    # 風險適配分數（加權）
+    risk_score = vol_fit*0.4 + beta_fit*0.3 + return_fit*0.2 + sharpe_fit*0.1
+
     personal_score = np.mean([sharpe_fit, return_fit, vol_fit, beta_fit])
 
     # HotIndex
@@ -138,6 +151,7 @@ for etf, etf_type in ETF_LIST.items():
         "年化報酬%":round(ann_ret,2),
         "年化波動%":round(ann_vol,2),
         "個人化分數":round(personal_score,3),
+        "風險適配分數":round(risk_score,3),
         "volume_score":hot_metrics["volume_score"],
         "volatility":hot_metrics["volatility"],
         "flow_proxy":hot_metrics["flow_proxy"],
@@ -157,16 +171,24 @@ df_all["hot_index"] = df_all[["volume_score_z","volatility_z","flow_proxy_z"]].s
 
 # 最終綜合分數
 df_all["final_score"] = ALPHA*df_all["hot_index"] + (1-ALPHA)*df_all["個人化分數"]
-df_all = df_all.sort_values("final_score",ascending=False)
+
+# ===============================
+# 排序依選擇
+# ===============================
+if sort_option == "Final Score (HotIndex + 個人化)":
+    df_all = df_all.sort_values("final_score",ascending=False)
+elif sort_option == "風險適配分數（依 θ）":
+    df_all = df_all.sort_values("風險適配分數",ascending=False)
+
 df_all_top = df_all.head(TOP_N)
 
 # ===============================
 # 表格顯示
 # ===============================
-st.subheader(f"🎯 Top {TOP_N} ETF 排序（HotIndex + 個人化分數）")
+st.subheader(f"🎯 Top {TOP_N} ETF 排序（{sort_option}）")
 st.dataframe(df_all_top[[
     "ETF","類型","最新價","Sharpe","Beta","年化報酬%","年化波動%",
-    "個人化分數","hot_index","final_score"
+    "個人化分數","風險適配分數","hot_index","final_score"
 ]],use_container_width=True)
 
 # ===============================
@@ -213,6 +235,6 @@ bubble = alt.Chart(df_all_top).mark_circle(opacity=0.7,stroke="black",strokeWidt
     y=alt.Y("個人化分數:Q", title="個人化分數", scale=alt.Scale(zero=True)),
     size=alt.Size("Beta:Q", title="Beta", scale=alt.Scale(range=[100,1600])),
     color=alt.Color("類型:N", title="ETF 類型"),
-    tooltip=["ETF","Sharpe","Beta","個人化分數","hot_index","final_score"]
+    tooltip=["ETF","Sharpe","Beta","個人化分數","風險適配分數","hot_index","final_score"]
 )
 st.altair_chart(bubble,use_container_width=True)
