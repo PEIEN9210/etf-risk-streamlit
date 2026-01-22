@@ -280,7 +280,7 @@ st.altair_chart(area+line+text,use_container_width=True)
 # ===============================
 # 氣泡圖
 # ===============================
-st.subheader(f"🫧 Top {TOP_N} ETF 氣泡圖（θ={round(theta,2)}）")
+st.subheader(f"💭 Top {TOP_N} ETF 氣泡圖（θ={round(theta,2)}）")
 bubble = alt.Chart(df_ui).mark_circle(opacity=0.7,stroke="black",strokeWidth=0.5).encode(
     x=alt.X("sharpe_fit:Q", title="Sharpe 適配"),
     y=alt.Y("personal_score:Q", title="個人化分數"),
