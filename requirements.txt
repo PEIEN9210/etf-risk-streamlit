@@ -2,5 +2,10 @@ streamlit
 pandas
 numpy
 yfinance
+requests
+beautifulsoup4
 lxml
-html5lib
+plotly
+streamlit
+altair
+scipy
