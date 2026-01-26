@@ -55,13 +55,23 @@ theta = ((80 - age)/60 + horizon/30 + loss_tol/50 + {"賣出":0,"觀望":0.5,"�
 theta = np.clip(theta, 0, 1)
 st.sidebar.metric("θ（風險偏好指數）", round(theta, 2))
 
-# HotIndex vs 個人化分數權重
+# α 由 θ 內生決定
+def alpha_from_theta(theta, alpha_min=0.1, alpha_max=0.7):
+    return alpha_min + (alpha_max - alpha_min) * theta
+
+ALPHA_MODEL = alpha_from_theta(theta)
+
+# Sidebar 顯示內生 α（純資訊）
 st.sidebar.header("⚖️ 綜合分數權重")
-ALPHA = st.sidebar.slider(
-    "HotIndex 權重（僅供對照）",
+st.sidebar.write(
+    f"📌 HotIndex 權重 (內生 α，依 θ 計算): {ALPHA_MODEL:.2f}\n"
+    f"📌 個人化分數權重: {1-ALPHA_MODEL:.2f}\n"
+    "(手動 slider α 僅供參考，不影響排序)"
+)
+st.sidebar.slider(
+    "HotIndex 權重（僅供參考）",
     0.0, 1.0, 0.5, step=0.05, key="alpha_slider"
 )
-st.sidebar.write(f"HotIndex 權重: {ALPHA:.2f} | 個人化分數權重: {1-ALPHA:.2f}")
 
 # 排序選項
 st.sidebar.header("📊 排序選擇")
@@ -174,10 +184,7 @@ df_all["hot_index"] = df_all[["volume_score_z", "volatility_z", "flow_proxy_z"]]
 # HotIndex 正規化
 hot_min = df_all["hot_index"].min()
 hot_max = df_all["hot_index"].max()
-if hot_max - hot_min == 0:
-    df_all["hot_index_norm"] = 0.5
-else:
-    df_all["hot_index_norm"] = (df_all["hot_index"] - hot_min) / (hot_max - hot_min)
+df_all["hot_index_norm"] = 0.5 if hot_max - hot_min == 0 else (df_all["hot_index"] - hot_min) / (hot_max - hot_min)
 
 # ===============================
 # 計算個人化分數 component（θ 驅動）
@@ -205,14 +212,8 @@ def compute_personalized_score(ann_ret, ann_vol, sharpe, beta, theta):
 def compute_final_score(hot_index_norm, personal_score, alpha):
     return alpha * hot_index_norm + (1 - alpha) * personal_score
 
-# α 由 θ 內生決定
-def alpha_from_theta(theta, alpha_min=0.1, alpha_max=0.7):
-    return alpha_min + (alpha_max - alpha_min) * theta
-
-ALPHA_MODEL = alpha_from_theta(theta)
-
 # ===============================
-# 支援不同 θ 的個人化排序（方法一 Ranking Robustness）
+# 支援不同 θ 的個人化排序（Ranking Robustness）
 # ===============================
 THETA_LIST = [0.0, 0.25, 0.5, 0.75, 1.0]
 theta_rankings = {}
@@ -228,6 +229,7 @@ for t in THETA_LIST:
         comp = compute_personalized_score(ann_ret, ann_vol, sharpe, beta, t)
         hot_metrics = compute_hot_index(df)
 
+        # 使用內生 α
         final_score = compute_final_score(
             df_all.loc[df_all["ETF"] == etf, "hot_index_norm"].values[0],
             comp["personal_score"],
