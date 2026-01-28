@@ -142,7 +142,9 @@ def robust_zscore(series):
 # ===============================
 # 主流程：計算 ETF 分數
 # ===============================
-market_df = fetch_price_data(MARKET_BENCHMARK)
+price_data = fetch_all_price_data(ETF_LIST, MARKET_BENCHMARK)
+market_df = price_data.get(MARKET_BENCHMARK)
+
 rows = []
 
 for etf, etf_type in ETF_LIST.items():
