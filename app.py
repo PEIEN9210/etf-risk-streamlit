@@ -148,7 +148,7 @@ market_df = price_data.get(MARKET_BENCHMARK)
 rows = []
 
 for etf, etf_type in ETF_LIST.items():
-    df = fetch_price_data(etf)
+    df = price_data.get(etf)
     if df is None or market_df is None:
         continue
 
@@ -238,7 +238,7 @@ theta_rankings = {}
 for t in THETA_LIST:
     rows = []
     for etf, etf_type in ETF_LIST.items():
-        df = fetch_price_data(etf)
+        df = price_data.get(etf)
         if df is None or market_df is None:
             continue
 
