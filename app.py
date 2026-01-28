@@ -95,6 +95,21 @@ def fetch_price_data(code, period="1y"):
         return None
     return df
 
+@st.cache_data(ttl=86400)
+def fetch_all_price_data(etf_list, benchmark, period="1y"):
+    data = {}
+    tickers = list(etf_list.keys()) + [benchmark]
+
+    for code in set(tickers):
+        try:
+            df = yf.Ticker(code).history(period=period)
+            if not df.empty and len(df) >= 50:
+                data[code] = df
+        except Exception as e:
+            data[code] = None
+    return data
+
+
 # ===============================
 # 指標計算
 # ===============================
