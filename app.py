@@ -211,6 +211,22 @@ for t in THETA_LIST:
 
 theta_display_closest = min(THETA_LIST,key=lambda x: abs(x-theta))
 df_ui = theta_rankings[theta_display_closest].head(TOP_N)
+# ===============================
+# 雷達圖專用資料（Top-N 內 0~1 視覺正規化）
+# 不影響任何原本計算、排序、表格、氣泡圖
+# ===============================
+radar_metrics = ["sharpe_fit", "return_fit", "vol_fit", "beta_fit"]
+
+df_radar = df_ui.copy()
+
+for col in radar_metrics:
+    min_v = df_radar[col].min()
+    max_v = df_radar[col].max()
+    if max_v > min_v:
+        df_radar[col] = (df_radar[col] - min_v) / (max_v - min_v)
+    else:
+        df_radar[col] = 0.5  # 避免 Top-N 全相等時除以 0
+
 
 # ===============================
 # Top-N 表格
@@ -222,29 +238,38 @@ st.dataframe(df_ui[["ETF","類型","最新價","最新配息日","最近一次�
              use_container_width=True)
 
 # ===============================
-# Top-N 雷達圖 (Plotly)
+# Top-N 雷達圖 (Plotly，Top-N 內 0~1 放大顯示)
 # ===============================
 st.subheader(f"🕸️ Top {TOP_N} ETF 多指標雷達圖")
 
-radar_metrics = ["sharpe_fit","return_fit","vol_fit","beta_fit"]
-radar_data=[]
-for _, row in df_ui.iterrows():
-    values = [row[m] for m in radar_metrics]
-    values.append(values[0])  # 閉合
-    radar_data.append({"ETF":row["ETF"],"values":values})
+radar_labels = ["Sharpe", "Return", "Volatility", "Beta"]
 
 fig = go.Figure()
-for data in radar_data:
+
+for _, row in df_radar.iterrows():
+    values = [row[m] for m in radar_metrics]
+    values.append(values[0])  # 閉合
+
     fig.add_trace(go.Scatterpolar(
-        r=data["values"],
-        theta=[m for m in radar_metrics]+[radar_metrics[0]],
-        fill='toself',
-        name=data["ETF"]
+        r=values,
+        theta=radar_labels + [radar_labels[0]],
+        fill="toself",
+        name=row["ETF"],
+        opacity=0.6
     ))
 
-fig.update_layout(polar=dict(radialaxis=dict(visible=True,range=[0,1])),showlegend=True)
-st.plotly_chart(fig, use_container_width=True)
+fig.update_layout(
+    polar=dict(
+        radialaxis=dict(
+            visible=True,
+            range=[0, 1]
+        )
+    ),
+    showlegend=True,
+    margin=dict(l=40, r=40, t=40, b=60)
+)
 
+st.plotly_chart(fig, use_container_width=True)
 # ===============================
 # Top-N 氣泡圖
 # ===============================
