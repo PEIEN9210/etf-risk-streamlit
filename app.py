@@ -77,57 +77,35 @@ TOP_N = st.sidebar.slider("Top N ETF", 1, len(ETF_LIST), 5)
 # ===============================
 # 抓取價格資料
 # ===============================
-@st.cache_data(ttl=30)  # 30 秒是理論極限
-def fetch_all_price_data(etf_list, benchmark, period="1d"):
-    """
-    目標：
-    1️⃣ 優先取得 Yahoo 所提供的「最後成交價」
-    2️⃣ 再嘗試 1m intraday
-    3️⃣ 最後才退回日線
-    ⚠️ 不改任何下游邏輯（Close.iloc[-1] 仍可用）
-    """
-    data = {}
-    tickers = list(etf_list.keys()) + [benchmark]
+@st.cache_data(ttl=0)  # ttl=0 = 每次重新抓即時資料
+def fetch_all_price_data(etf_list, benchmark):
+    price_data = {}
 
-    for code in set(tickers):
+    for code in list(etf_list.keys()) + [benchmark]:
         try:
-            ticker = yf.Ticker(code)
+            df = yf.download(
+                code,
+                period="6mo",
+                interval="1d",
+                auto_adjust=True,
+                progress=False,
+                threads=False
+            )
 
-            # ===============================
-            # ① 嘗試取得 Yahoo 的「最後成交價」
-            # ===============================
-            last_price = None
-            try:
-                fi = ticker.fast_info
-                last_price = fi.get("last_price", None)
-            except Exception:
-                last_price = None
+            if df.empty:
+                st.warning(f"{code} 價格資料為空")
+                continue
 
-            # ===============================
-            # ② 嘗試 1 分鐘 intraday
-            # ===============================
-            df = ticker.history(period="1d", interval="1m")
+            df = df[["Close"]].dropna()
+            price_data[code] = df
 
-            # 若 1m 沒資料，退回原本邏輯
-            if df.empty or "Close" not in df:
-                df = ticker.history(period=period)
+        except Exception as e:
+            # ✅ e 只在 except 裡使用，不會再 UnboundLocalError
+            st.warning(f"{code} 價格資料抓取失敗：{str(e)}")
+            continue
 
-            # ===============================
-            # ③ 強制同步最後成交價（關鍵）
-            # ===============================
-            if last_price is not None and not df.empty:
-                df = df.copy()
-                df.iloc[-1, df.columns.get_loc("Close")] = float(last_price)
-
-            if not df.empty:
-                data[code] = df
-            else:
-                data[code] = None
-
-        except Exception:
-            data[code] = None
-
-    return data    
+    return price_data
+    
 @st.cache_data(ttl=86400)
 def fetch_dividend_info(code):
     try:
