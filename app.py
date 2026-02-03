@@ -77,11 +77,14 @@ TOP_N = st.sidebar.slider("Top N ETF", 1, len(ETF_LIST), 5)
 # ===============================
 # 抓取價格資料
 # ===============================
-@st.cache_data(ttl=60)  # 🔴 關鍵：1 分鐘快取
+@st.cache_data(ttl=30)  # 30 秒是理論極限
 def fetch_all_price_data(etf_list, benchmark, period="1d"):
     """
-    使用 Yahoo Finance 1m interval
-    若 intraday 抓不到，才退回日線（保證系統不炸）
+    目標：
+    1️⃣ 優先取得 Yahoo 所提供的「最後成交價」
+    2️⃣ 再嘗試 1m intraday
+    3️⃣ 最後才退回日線
+    ⚠️ 不改任何下游邏輯（Close.iloc[-1] 仍可用）
     """
     data = {}
     tickers = list(etf_list.keys()) + [benchmark]
@@ -90,12 +93,31 @@ def fetch_all_price_data(etf_list, benchmark, period="1d"):
         try:
             ticker = yf.Ticker(code)
 
-            # ① 嘗試抓取 1 分鐘即時資料（Yahoo 所能提供的極限）
+            # ===============================
+            # ① 嘗試取得 Yahoo 的「最後成交價」
+            # ===============================
+            last_price = None
+            try:
+                fi = ticker.fast_info
+                last_price = fi.get("last_price", None)
+            except Exception:
+                last_price = None
+
+            # ===============================
+            # ② 嘗試 1 分鐘 intraday
+            # ===============================
             df = ticker.history(period="1d", interval="1m")
 
-            # ② 若 Yahoo 未提供（常見於冷門 ETF / 非交易時段）
-            if df.empty or len(df) < 5:
+            # 若 1m 沒資料，退回原本邏輯
+            if df.empty or "Close" not in df:
                 df = ticker.history(period=period)
+
+            # ===============================
+            # ③ 強制同步最後成交價（關鍵）
+            # ===============================
+            if last_price is not None and not df.empty:
+                df = df.copy()
+                df.iloc[-1, df.columns.get_loc("Close")] = float(last_price)
 
             if not df.empty:
                 data[code] = df
@@ -105,8 +127,7 @@ def fetch_all_price_data(etf_list, benchmark, period="1d"):
         except Exception:
             data[code] = None
 
-    return data
-    
+    return data    
 @st.cache_data(ttl=86400)
 def fetch_dividend_info(code):
     try:
