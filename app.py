@@ -87,7 +87,8 @@ def fetch_all_price_data(etf_list, benchmark, period="1y"):
             ticker = yf.Ticker(code)
 
             # ① 先嘗試抓盤中 1 分鐘資料（若 Yahoo 有提供）
-            df = ticker.history(period="1d", interval="1m")
+            ticker = yf.Ticker(code)
+            df = ticker.history(period=period)
 
             # ② 若失敗或資料太少，自動退回日線（穩定來源）
             if df.empty or len(df) < 10:
@@ -98,8 +99,9 @@ def fetch_all_price_data(etf_list, benchmark, period="1y"):
             else:
                 data[code] = None
 
-        except Exception:
-            data[code] = None
+        except Exception as e:
+                data[code] = None
+        st.warning(f"{code} 價格資料抓取失敗：{e}")
 
     return data
 @st.cache_data(ttl=86400)
@@ -107,24 +109,38 @@ def fetch_dividend_info(code):
     try:
         ticker = yf.Ticker(code)
         dividends = ticker.dividends
+
         if dividends is None or dividends.empty:
-            return {"最新配息日": None, "最近一次配息": 0.0, "TTM配息": 0.0, "TTM殖利率%": 0.0}
-        one_year_ago = pd.Timestamp.today() - pd.DateOffset(years=1)
-        ttm_dividends = dividends[dividends.index >= one_year_ago]
-        latest_date = dividends.index[-1]
-        latest_div = float(dividends.iloc[-1])
-        ttm_sum = float(ttm_dividends.sum())
-        price_df = ticker.history(period="5d")
-        if price_df.empty:
             return {"最新配息日": None, "最近一次配息": 0.0,
                     "TTM配息": 0.0, "TTM殖利率%": 0.0}
 
-        price = price_df["Close"].iloc[-1]
-        yield_ttm = (ttm_sum / price) * 100 if price > 0 else 0
-        return {"最新配息日": latest_date.date(), "最近一次配息": round(latest_div,3),
-                "TTM配息": round(ttm_sum,3), "TTM殖利率%": round(yield_ttm,2)}
-    except Exception:
-        return {"最新配息日": None, "最近一次配息": 0.0, "TTM配息": 0.0, "TTM殖利率%": 0.0}
+        dividends = dividends.sort_index()
+        one_year_ago = dividends.index.max() - pd.DateOffset(years=1)
+        ttm_dividends = dividends[dividends.index >= one_year_ago]
+
+        latest_date = dividends.index[-1]
+        latest_div = float(dividends.iloc[-1])
+        ttm_sum = float(ttm_dividends.sum())
+
+        price_df = ticker.history(period="5d")
+        if price_df.empty or "Close" not in price_df:
+            price = np.nan
+        else:
+            price = price_df["Close"].iloc[-1]
+
+        yield_ttm = (ttm_sum / price) * 100 if price and price > 0 else 0
+
+        return {
+            "最新配息日": latest_date.date(),
+            "最近一次配息": round(latest_div, 3),
+            "TTM配息": round(ttm_sum, 3),
+            "TTM殖利率%": round(yield_ttm, 2)
+        }
+
+    except Exception as e:
+        st.warning(f"{code} 配息資料抓取失敗：{e}")
+        return {"最新配息日": None, "最近一次配息": 0.0,
+                "TTM配息": 0.0, "TTM殖利率%": 0.0}
 
 # ===============================
 # 指標計算
