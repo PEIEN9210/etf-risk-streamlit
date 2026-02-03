@@ -77,8 +77,12 @@ TOP_N = st.sidebar.slider("Top N ETF", 1, len(ETF_LIST), 5)
 # ===============================
 # 抓取價格資料
 # ===============================
-@st.cache_data(ttl=86400)
-def fetch_all_price_data(etf_list, benchmark, period="1y"):
+@st.cache_data(ttl=60)  # 🔴 關鍵：1 分鐘快取
+def fetch_all_price_data(etf_list, benchmark, period="1d"):
+    """
+    使用 Yahoo Finance 1m interval
+    若 intraday 抓不到，才退回日線（保證系統不炸）
+    """
     data = {}
     tickers = list(etf_list.keys()) + [benchmark]
 
@@ -86,24 +90,23 @@ def fetch_all_price_data(etf_list, benchmark, period="1y"):
         try:
             ticker = yf.Ticker(code)
 
-            # ① 先嘗試抓盤中 1 分鐘資料（若 Yahoo 有提供）
-            ticker = yf.Ticker(code)
-            df = ticker.history(period=period)
+            # ① 嘗試抓取 1 分鐘即時資料（Yahoo 所能提供的極限）
+            df = ticker.history(period="1d", interval="1m")
 
-            # ② 若失敗或資料太少，自動退回日線（穩定來源）
-            if df.empty or len(df) < 10:
+            # ② 若 Yahoo 未提供（常見於冷門 ETF / 非交易時段）
+            if df.empty or len(df) < 5:
                 df = ticker.history(period=period)
 
-            if not df.empty and len(df) >= 50:
+            if not df.empty:
                 data[code] = df
             else:
                 data[code] = None
 
-        except Exception as e:
-                data[code] = None
-        st.warning(f"{code} 價格資料抓取失敗：{e}")
+        except Exception:
+            data[code] = None
 
     return data
+    
 @st.cache_data(ttl=86400)
 def fetch_dividend_info(code):
     try:
