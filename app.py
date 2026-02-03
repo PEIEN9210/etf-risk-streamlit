@@ -133,11 +133,11 @@ def calc_metrics(df, market_df):
     mr = market_df["Close"].pct_change().dropna()
     idx = r.index.intersection(mr.index)
     r, mr = r.loc[idx], mr.loc[idx]
-    ann_ret = r.mean() * TRADING_DAYS
-    ann_vol = r.std() * np.sqrt(TRADING_DAYS)
-    sharpe = (ann_ret - RISK_FREE_RATE) / ann_vol if ann_vol>0 else 0
-    beta = np.cov(r, mr)[0,1] / np.var(mr)
-    return ann_ret*100, ann_vol*100, sharpe, beta
+    ann_ret = float(r.mean() * TRADING_DAYS)
+    ann_vol = float(r.std() * np.sqrt(TRADING_DAYS))
+    sharpe = (ann_ret - RISK_FREE_RATE) / ann_vol if ann_vol > 0 else 0
+    beta = np.cov(r, mr)[0,1] / np.var(mr) if np.var(mr) > 0 else 0
+    return ann_ret, ann_vol, sharpe, beta
 
 def compute_hot_index(df, window=20):
     volume_ma = df["Volume"].rolling(window).mean().iloc[-1]
