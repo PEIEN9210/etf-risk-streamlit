@@ -335,6 +335,20 @@ df_v2 = pd.DataFrame(v2_rows)
 df_all = df_all.merge(df_v2, on="ETF", how="left")
 
 st.divider()
+
+# ===============================
+# V2 進階分析
+# ===============================
 st.subheader("🧩 V2 進階分析")
-st.dataframe(df_all[["ETF","V2_非線性分數","V2_多期間加權報酬%","V2_下行波動%","V2_CVaR_95%"]],
-             use_container_width=True)
+st.dataframe(
+    df_all[
+        [
+            "ETF",
+            "V2_非線性分數",
+            "V2_多期間加權報酬%",
+            "V2_下行波動%",
+            "V2_CVaR_95%"
+        ]
+    ],
+    use_container_width=True
+)
