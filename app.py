@@ -10,12 +10,16 @@ Original file is located at
 # app.py 
 # -*- coding: utf-8 -*-
 
+# -*- coding: utf-8 -*-
+"""
+台灣 ETF 個人化推薦系統 - 快速修復版
+"""
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
 from datetime import datetime, timedelta
-from scipy.stats import spearmanr
 import plotly.graph_objects as go
 import altair as alt
 import requests
@@ -24,14 +28,14 @@ import requests
 # 基本設定
 # ===============================
 st.set_page_config(page_title="台灣 ETF 個人化推薦系統", layout="wide")
-st.title("📊 台灣 ETF 個人化 + 熱門 ETF 多準則資產排序框架")
-st.caption("⚠️ 本系統僅供學術研究參考，不構成投資建議。投資有風險，請審慎評估。")
+st.title("📊 台灣 ETF 個人化推薦系統（修正版）")
+st.caption("⚠️ 本系統僅供學術研究參考，不構成投資建議。")
 
 TRADING_DAYS = 252
-RISK_FREE_RATE = 0.01  # 無風險利率
+RISK_FREE_RATE = 0.015
 
 # ===============================
-# ETF Universe & 市場基準
+# ETF Universe
 # ===============================
 ETF_LIST = {
     "0050.TW": "股票型",
@@ -45,110 +49,65 @@ ETF_LIST = {
 MARKET_BENCHMARK = "0050.TW"
 
 # ===============================
-# Sidebar：風險偏好評估（SCF 問卷法）
+# Sidebar：風險偏好評估
 # ===============================
 st.sidebar.header("👤 投資人風險偏好評估")
-st.sidebar.markdown("**基於 SCF Risk Tolerance Questionnaire**")
-st.sidebar.caption("美國聯邦儲備系統消費者財務調查標準問卷")
 
-# === Question 1: Investment Horizon ===
-st.sidebar.markdown("---")
-st.sidebar.subheader("Q1. 您的投資時間範圍？")
+st.sidebar.subheader("Q1. 投資時間範圍")
 horizon_mapping = {
-    "少於 1 年": (0.5, 0.0),
-    "1-3 年": (2, 0.15),
-    "4-6 年": (5, 0.30),
-    "7-10 年": (8.5, 0.50),
-    "10 年以上": (15, 0.70)
+    "少於 1 年": 0.0,
+    "1-3 年": 0.15,
+    "4-6 年": 0.30,
+    "7-10 年": 0.50,
+    "10 年以上": 0.70
 }
-horizon_choice = st.sidebar.radio(
-    "選擇投資期間",
-    list(horizon_mapping.keys()),
-    index=3,  # 預設 7-10 年
-    help="較長的投資期間允許承受更高的短期波動"
-)
-horizon_years, horizon_score = horizon_mapping[horizon_choice]
+horizon_choice = st.sidebar.radio("選擇投資期間", list(horizon_mapping.keys()), index=3)
+horizon_score = horizon_mapping[horizon_choice]
 
-# === Question 2: Risk Capacity (SCF Standard Question) ===
-st.sidebar.markdown("---")
-st.sidebar.subheader("Q2. 如果您有一筆閒置資金，您會選擇？")
+st.sidebar.subheader("Q2. 風險承受能力")
 risk_capacity_mapping = {
-    "存入銀行或購買政府公債（幾乎無風險）": 0.0,
-    "購買債券型基金（低風險，報酬穩定）": 0.25,
-    "購買混合型基金（中等風險與報酬）": 0.50,
-    "購買股票型基金（高風險，追求高報酬）": 0.75,
-    "購買個股或高風險商品（承受重大虧損風險）": 1.0
+    "存入銀行（無風險）": 0.0,
+    "債券型基金（低風險）": 0.25,
+    "混合型基金（中等風險）": 0.50,
+    "股票型基金（高風險）": 0.75,
+    "個股（極高風險）": 1.0
 }
-risk_capacity = st.sidebar.radio(
-    "投資偏好",
-    list(risk_capacity_mapping.keys()),
-    index=2,  # 預設混合型
-    help="SCF 標準問題：評估您對風險報酬的基本態度"
-)
+risk_capacity = st.sidebar.radio("投資偏好", list(risk_capacity_mapping.keys()), index=2)
 capacity_score = risk_capacity_mapping[risk_capacity]
 
-# === Question 3: Loss Tolerance (Behavioral Finance Standard) ===
-st.sidebar.markdown("---")
-st.sidebar.subheader("Q3. 假設您投資的資產在一個月內下跌 20%，您會？")
+st.sidebar.subheader("Q3. 損失容忍度")
 loss_tolerance_mapping = {
-    "立即全部賣出，無法承受虧損": 0.0,
-    "賣出一半，降低風險": 0.20,
-    "維持不動，等待反彈": 0.50,
-    "小幅加碼，逢低承接": 0.75,
-    "大幅加碼，認為是絕佳機會": 1.0
+    "立即全部賣出": 0.0,
+    "賣出一半": 0.20,
+    "維持不動": 0.50,
+    "小幅加碼": 0.75,
+    "大幅加碼": 1.0
 }
-loss_tolerance = st.sidebar.radio(
-    "市場下跌反應",
-    list(loss_tolerance_mapping.keys()),
-    index=2,  # 預設維持不動
-    help="行為金融學標準問題：評估您的損失厭惡程度"
-)
+loss_tolerance = st.sidebar.radio("市場下跌 20% 時", list(loss_tolerance_mapping.keys()), index=2)
 loss_score = loss_tolerance_mapping[loss_tolerance]
 
-# === Question 4: Income Stability ===
-st.sidebar.markdown("---")
-st.sidebar.subheader("Q4. 您的收入穩定性？")
+st.sidebar.subheader("Q4. 收入穩定性")
 income_stability_mapping = {
-    "非常不穩定（自由業、創業）": 0.0,
-    "不穩定（業務性質、佣金制）": 0.25,
-    "普通（固定薪資但有裁員風險）": 0.50,
-    "穩定（公務員、大企業員工）": 0.75,
-    "非常穩定（退休金、租金收入）": 1.0
+    "非常不穩定": 0.0,
+    "不穩定": 0.25,
+    "普通": 0.50,
+    "穩定": 0.75,
+    "非常穩定": 1.0
 }
-income_stability = st.sidebar.selectbox(
-    "收入狀況",
-    list(income_stability_mapping.keys()),
-    index=2,  # 預設普通
-    help="收入穩定性影響您承受投資風險的能力"
-)
+income_stability = st.sidebar.selectbox("收入狀況", list(income_stability_mapping.keys()), index=2)
 income_score = income_stability_mapping[income_stability]
 
-# === Question 5: Age-based Adjustment (生命週期理論) ===
-st.sidebar.markdown("---")
-st.sidebar.subheader("Q5. 您的年齡？")
-age = st.sidebar.slider(
-    "年齡", 
-    20, 80, 35,
-    help="基於生命週期投資理論，年輕投資人可承受較高風險"
-)
-# 改良版 "100-age" rule：使用非線性函數
+st.sidebar.subheader("Q5. 年齡")
+age = st.sidebar.slider("年齡", 20, 80, 35)
 age_score = max(0, min(1, (100 - age) / 60))
 
-# ===============================
-# θ 計算：學術加權平均
-# ===============================
-st.sidebar.markdown("---")
-st.sidebar.subheader("📊 風險偏好計算")
-
-# 權重來源：
-# - Grable & Lytton (1999): Financial Risk Tolerance Revisited
-# - Barsky et al. (1997): Preference Parameters and Behavioral Heterogeneity
+# θ 計算
 weights = {
-    'horizon': 0.25,      # 投資時間範圍
-    'capacity': 0.30,     # 風險承受能力（SCF 核心問題，權重最高）
-    'loss': 0.25,         # 損失容忍度（行為金融學重點）
-    'income': 0.10,       # 收入穩定性
-    'age': 0.10          # 年齡調整（生命週期理論）
+    'horizon': 0.25,
+    'capacity': 0.30,
+    'loss': 0.25,
+    'income': 0.10,
+    'age': 0.10
 }
 
 theta = (
@@ -158,17 +117,10 @@ theta = (
     weights['income'] * income_score +
     weights['age'] * age_score
 )
-
 theta = np.clip(theta, 0, 1)
 
-# 顯示主要指標
-st.sidebar.metric(
-    "θ（風險偏好指數）", 
-    f"{theta:.3f}",
-    help="範圍 0-1，數值越高代表越能承受風險"
-)
+st.sidebar.metric("θ（風險偏好指數）", f"{theta:.3f}")
 
-# 風險類型分類
 risk_profile = (
     "🔵 極度保守" if theta < 0.2 else
     "🟢 保守" if theta < 0.4 else
@@ -176,494 +128,254 @@ risk_profile = (
     "🟠 積極" if theta < 0.8 else
     "🔴 非常積極"
 )
-st.sidebar.info(f"**您的風險類型**：{risk_profile}")
+st.sidebar.info(f"**風險類型**：{risk_profile}")
 
-# 顯示各項分數（摺疊面板）
-with st.sidebar.expander("📋 查看詳細評分"):
-    st.write(f"**各項分數明細：**")
-    st.write(f"- 投資時間分數：{horizon_score:.2f} (權重 {weights['horizon']:.0%})")
-    st.write(f"- 風險承受分數：{capacity_score:.2f} (權重 {weights['capacity']:.0%})")
-    st.write(f"- 損失容忍分數：{loss_score:.2f} (權重 {weights['loss']:.0%})")
-    st.write(f"- 收入穩定分數：{income_score:.2f} (權重 {weights['income']:.0%})")
-    st.write(f"- 年齡調整分數：{age_score:.2f} (權重 {weights['age']:.0%})")
-    st.divider()
-    st.write(f"**加權計算：**")
-    st.write(f"θ = {horizon_score:.2f}×{weights['horizon']:.2f} + "
-             f"{capacity_score:.2f}×{weights['capacity']:.2f} + "
-             f"{loss_score:.2f}×{weights['loss']:.2f} + "
-             f"{income_score:.2f}×{weights['income']:.2f} + "
-             f"{age_score:.2f}×{weights['age']:.2f}")
-    st.write(f"  = **{theta:.3f}**")
-
-# 學術參考文獻
-with st.sidebar.expander("📚 學術依據"):
-    st.caption(
-        "**參考文獻：**\n\n"
-        "1. Barsky, R. B., Juster, F. T., Kimball, M. S., & Shapiro, M. D. (1997). "
-        "Preference parameters and behavioral heterogeneity: An experimental approach in the health and retirement study. "
-        "*The Quarterly Journal of Economics*, 112(2), 537-579.\n\n"
-        "2. Grable, J., & Lytton, R. H. (1999). "
-        "Financial risk tolerance revisited: the development of a risk assessment instrument. "
-        "*Financial Services Review*, 8(3), 163-181.\n\n"
-        "3. Merton, R. C. (1969). Lifetime portfolio selection under uncertainty: "
-        "The continuous-time case. *The Review of Economics and Statistics*, 247-257."
-    )
-
-# ===============================
-# α 計算（從 θ 映射到 HotIndex 權重）
-# ===============================
+# α 計算
 def alpha_from_theta(theta, alpha_min=0.1, alpha_max=0.7):
-    """
-    將風險偏好 θ 映射到 HotIndex 權重 α
-    
-    理論基礎：
-    - 保守投資人(θ低)：更注重個人化適配，α 較低
-    - 積極投資人(θ高)：更願意跟隨市場熱度，α 較高
-    """
     return alpha_min + (alpha_max - alpha_min) * theta
 
 ALPHA_MODEL = alpha_from_theta(theta)
 
-st.sidebar.markdown("---")
-st.sidebar.header("⚖️ 綜合分數權重")
-st.sidebar.write(
-    f"📌 **HotIndex 權重（α）**: {ALPHA_MODEL:.2f}\n\n"
-    f"📌 **個人化分數權重（1-α）**: {1-ALPHA_MODEL:.2f}"
-)
-st.sidebar.caption(
-    f"💡 說明：您的風險偏好 θ={theta:.2f}，系統自動計算最適權重配置"
-)
-
-st.sidebar.markdown("---")
-st.sidebar.header("📊 排序選擇")
+st.sidebar.header("排序選擇")
 sort_option = st.sidebar.selectbox(
-    "選擇排序依據", 
-    ["Final Score (HotIndex + 個人化)", "風險適配分數（依 θ）"]
+    "排序依據",
+    [
+        "綜合分數",
+        "個人化分數",
+        "年化報酬率",
+        "Sharpe Ratio",
+        "TTM 殖利率"
+    ]
 )
 
-st.sidebar.header("📈 Top N ETF 顯示")
 TOP_N = st.sidebar.slider("Top N ETF", 1, len(ETF_LIST), 5)
 
-st.sidebar.markdown("---")
-st.sidebar.header("🔄 即時更新")
-if st.sidebar.button("清除快取並更新報價"):
-    st.cache_data.clear()
-    st.sidebar.success("✅ 已清除快取，將重新抓取報價")
-
-price_source = st.sidebar.selectbox(
-    "最新價來源", 
-    ["auto", "fast_info", "1m"], 
-    index=0,
-    help="Yahoo Finance 資料可能有延遲"
-)
-latest_ttl = st.sidebar.slider(
-    "最新價快取秒數", 
-    0, 120, 10, step=5,
-    help="較短的快取時間可獲得更即時的價格，但會增加 API 請求次數"
-)
-st.sidebar.caption("⚠️ Yahoo 資料通常延遲 15 分鐘，若需即時報價請使用券商 API")
-
 # ===============================
-# 除錯模式（新增）
-# ===============================
-st.sidebar.markdown("---")
-DEBUG_MODE = st.sidebar.checkbox("🔧 除錯模式", value=False)
-
-if DEBUG_MODE:
-    st.sidebar.markdown("### 🧪 API 測試")
-    test_etf = st.sidebar.selectbox("選擇測試 ETF", list(ETF_LIST.keys()))
-    
-    if st.sidebar.button("測試配息資料抓取"):
-        st.write("### API 回應測試")
-        
-        stock_code = test_etf.replace('.TW', '')
-        
-        # 測試 FinMind API
-        try:
-            url = "https://api.finmindtrade.com/api/v4/data"
-            params = {
-                "dataset": "TaiwanStockDividend",
-                "data_id": stock_code,
-                "start_date": (datetime.now() - timedelta(days=400)).strftime('%Y-%m-%d'),
-                "token": ""
-            }
-            
-            response = requests.get(url, params=params, timeout=10)
-            data = response.json()
-            
-            st.write("**API 狀態碼:**", response.status_code)
-            st.write("**API 回應狀態:**", data.get('status'))
-            st.write("**資料筆數:**", len(data.get('data', [])))
-            
-            if data.get('data'):
-                df_test = pd.DataFrame(data['data'])
-                st.write("**欄位名稱:**", df_test.columns.tolist())
-                st.dataframe(df_test.head())
-            else:
-                st.error("❌ API 回傳空資料")
-                
-        except Exception as e:
-            st.error(f"❌ 錯誤: {str(e)}")
-        
-        # 顯示最終結果
-        st.write("---")
-        st.write("**最終輸出:**")
-        # 這裡會調用下面定義的 fetch_dividend_info
-        # result = fetch_dividend_info(test_etf)
-        # st.json(result)
-
-# ===============================
-# 資料來源說明（新增）
-# ===============================
-st.sidebar.markdown("---")
-st.sidebar.header("📡 資料來源")
-
-with st.sidebar.expander("查看資料來源說明"):
-    st.caption(
-        "**價格資料**：Yahoo Finance (延遲 15 分鐘)\n\n"
-        "**配息資料**：\n"
-        "1. FinMind API（優先，免費開源）\n"
-        "2. 手動維護靜態資料（備用）\n\n"
-        "**更新頻率**：每小時更新一次\n\n"
-        "⚠️ **注意**：配息資料僅供參考，實際配息以各 ETF 公告為準"
-    )
-
-# ===============================
-# 抓取價格資料
+# 資料抓取
 # ===============================
 
-@st.cache_data(ttl=300)  # 5 分鐘
+@st.cache_data(ttl=1800)
 def fetch_all_price_data(etf_list, benchmark, period="1y"):
     data = {}
     tickers = list(etf_list.keys()) + [benchmark]
+    
     for code in set(tickers):
         try:
             df = yf.Ticker(code).history(period=period)
             if not df.empty and len(df) >= 50:
                 data[code] = df
-        except Exception:
+            else:
+                data[code] = None
+        except:
             data[code] = None
+    
     return data
 
-@st.cache_data(ttl=30)  # 30 秒
+@st.cache_data(ttl=300)
 def fetch_latest_price(code):
     try:
         ticker = yf.Ticker(code)
-        fast_info = getattr(ticker, "fast_info", None)
-        if fast_info:
-            for key in ("last_price", "lastPrice", "regularMarketPrice"):
-                price = fast_info.get(key)
-                if price:
-                    return float(price)
-        df = yf.download(code, period="1d", interval="1m", progress=False)
-        if df is None or df.empty:
-            return None
-        return float(df["Close"].iloc[-1])
-    except Exception:
-        return None
-
-# ===============================
-# 配息資料抓取（完整修正版）
-# ===============================
-
-def get_price_from_finmind(stock_code):
-    """
-    從 FinMind 取得最新股價（備用方案）
-    """
-    try:
-        url = "https://api.finmindtrade.com/api/v4/data"
-        params = {
-            "dataset": "TaiwanStockPrice",
-            "data_id": stock_code,
-            "start_date": (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d'),
-            "token": ""
-        }
-        
-        response = requests.get(url, params=params, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('status') == 200 and data.get('data'):
-                df_price = pd.DataFrame(data['data'])
-                if not df_price.empty and 'close' in df_price.columns:
-                    return float(df_price.iloc[-1]['close'])
-        
+        hist = ticker.history(period="5d")
+        if not hist.empty:
+            return float(hist['Close'].iloc[-1])
         return None
     except:
         return None
 
-
+@st.cache_data(ttl=7200)
 def get_static_dividend_data(stock_code):
-    """
-    手動維護的靜態配息資料（2024 Q4 更新）
-    資料來源：各 ETF 官網公告
-    """
     static_data = {
-        "0050": {
-            "最新配息日": datetime(2024, 7, 22).date(),
-            "最近一次配息": 3.00,
-            "TTM配息": 5.50,
-            "TTM殖利率%": 3.2
-        },
-        "0056": {
-            "最新配息日": datetime(2024, 10, 22).date(),
-            "最近一次配息": 2.20,
-            "TTM配息": 4.40,
-            "TTM殖利率%": 6.8
-        },
-        "006208": {
-            "最新配息日": datetime(2024, 7, 22).date(),
-            "最近一次配息": 0.65,
-            "TTM配息": 1.30,
-            "TTM殖利率%": 2.9
-        },
-        "00878": {
-            "最新配息日": datetime(2024, 11, 22).date(),
-            "最近一次配息": 0.38,
-            "TTM配息": 1.52,
-            "TTM殖利率%": 7.2
-        },
-        "00919": {
-            "最新配息日": datetime(2024, 10, 22).date(),
-            "最近一次配息": 0.54,
-            "TTM配息": 2.16,
-            "TTM殖利率%": 8.5
-        },
-        "00692": {
-            "最新配息日": datetime(2024, 7, 22).date(),
-            "最近一次配息": 0.48,
-            "TTM配息": 0.96,
-            "TTM殖利率%": 3.1
-        },
-        "00757": {
-            "最新配息日": datetime(2024, 8, 22).date(),
-            "最近一次配息": 0.28,
-            "TTM配息": 0.56,
-            "TTM殖利率%": 2.5
-        }
+        "0050": {"最新配息日": "2024-07-22", "最近一次配息": 3.00, "TTM配息": 5.50, "TTM殖利率%": 3.2},
+        "0056": {"最新配息日": "2025-01-22", "最近一次配息": 2.00, "TTM配息": 4.20, "TTM殖利率%": 6.5},
+        "006208": {"最新配息日": "2024-07-22", "最近一次配息": 0.65, "TTM配息": 1.30, "TTM殖利率%": 2.9},
+        "00878": {"最新配息日": "2024-11-22", "最近一次配息": 0.38, "TTM配息": 1.52, "TTM殖利率%": 7.2},
+        "00919": {"最新配息日": "2025-01-22", "最近一次配息": 0.62, "TTM配息": 2.32, "TTM殖利率%": 9.1},
+        "00692": {"最新配息日": "2024-07-22", "最近一次配息": 0.48, "TTM配息": 0.96, "TTM殖利率%": 3.1},
+        "00757": {"最新配息日": "2024-08-22", "最近一次配息": 0.28, "TTM配息": 0.56, "TTM殖利率%": 2.5}
     }
-    
-    result = static_data.get(stock_code, {
-        "最新配息日": None,
-        "最近一次配息": 0.0,
-        "TTM配息": 0.0,
-        "TTM殖利率%": 0.0
+    return static_data.get(stock_code, {
+        "最新配息日": None, "最近一次配息": 0.0, "TTM配息": 0.0, "TTM殖利率%": 0.0
     })
-    
-    return result
-
-
-@st.cache_data(ttl=3600)  # 快取 1 小時
-def fetch_dividend_info(etf_code):
-    """
-    多層次資料來源策略抓取 ETF 配息資料
-    優先順序：FinMind API → 靜態資料
-    """
-    stock_code = etf_code.replace('.TW', '')
-    
-    # 方法 1: FinMind API
-    try:
-        url = "https://api.finmindtrade.com/api/v4/data"
-        params = {
-            "dataset": "TaiwanStockDividend",
-            "data_id": stock_code,
-            "start_date": (datetime.now() - timedelta(days=400)).strftime('%Y-%m-%d'),
-            "token": ""  # 免費版
-        }
-        
-        response = requests.get(url, params=params, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            
-            # 檢查 API 回應狀態
-            if data.get('status') == 200 and data.get('data') and len(data['data']) > 0:
-                df = pd.DataFrame(data['data'])
-                
-                if not df.empty:
-                    # 處理日期欄位
-                    if 'date' in df.columns:
-                        df['date'] = pd.to_datetime(df['date'])
-                    elif 'ex_dividend_date' in df.columns:
-                        df['date'] = pd.to_datetime(df['ex_dividend_date'])
-                    else:
-                        raise ValueError("找不到日期欄位")
-                    
-                    df = df.sort_values('date', ascending=False)
-                    
-                    # 處理配息金額欄位（FinMind 可能用不同欄位名）
-                    dividend_col = None
-                    for col_name in ['cash_dividend', 'CashDividend', 'cash_dividend_amount']:
-                        if col_name in df.columns:
-                            dividend_col = col_name
-                            break
-                    
-                    if dividend_col is None:
-                        raise ValueError(f"找不到配息欄位，可用欄位: {df.columns.tolist()}")
-                    
-                    # 過濾掉配息為 0 或 NaN 的紀錄
-                    df[dividend_col] = pd.to_numeric(df[dividend_col], errors='coerce')
-                    df = df[df[dividend_col] > 0].dropna(subset=[dividend_col])
-                    
-                    if df.empty:
-                        raise ValueError("沒有有效的配息記錄")
-                    
-                    # 計算 TTM（過去 12 個月）
-                    one_year_ago = datetime.now() - timedelta(days=365)
-                    ttm_df = df[df['date'] >= one_year_ago]
-                    ttm_sum = ttm_df[dividend_col].sum()
-                    
-                    # 取得最新價格
-                    latest_price = fetch_latest_price(etf_code)
-                    if latest_price is None or latest_price <= 0:
-                        # 嘗試從 FinMind 抓取價格
-                        latest_price = get_price_from_finmind(stock_code)
-                        if latest_price is None or latest_price <= 0:
-                            latest_price = 100  # 最終預設值
-                    
-                    ttm_yield = (ttm_sum / latest_price * 100) if latest_price > 0 else 0
-                    
-                    return {
-                        "最新配息日": df.iloc[0]['date'].date(),
-                        "最近一次配息": round(float(df.iloc[0][dividend_col]), 3),
-                        "TTM配息": round(float(ttm_sum), 3),
-                        "TTM殖利率%": round(ttm_yield, 2)
-                    }
-    
-    except Exception as e:
-        # 記錄錯誤（僅在除錯模式顯示）
-        if DEBUG_MODE:
-            st.warning(f"⚠️ FinMind API 錯誤 ({stock_code}): {str(e)}")
-        pass
-    
-    # 方法 2: 備用靜態資料
-    return get_static_dividend_data(stock_code)
 
 # ===============================
 # 指標計算
 # ===============================
+
 def calc_metrics(df, market_df):
-    r = df["Close"].pct_change().dropna()
-    mr = market_df["Close"].pct_change().dropna()
-    idx = r.index.intersection(mr.index)
-    r, mr = r.loc[idx], mr.loc[idx]
-    ann_ret = r.mean() * TRADING_DAYS
-    ann_vol = r.std() * np.sqrt(TRADING_DAYS)
-    sharpe = (ann_ret - RISK_FREE_RATE) / ann_vol if ann_vol>0 else 0
-    beta = np.cov(r, mr)[0,1] / np.var(mr)
-    return ann_ret*100, ann_vol*100, sharpe, beta
+    try:
+        r = df["Close"].pct_change().dropna()
+        mr = market_df["Close"].pct_change().dropna()
+        idx = r.index.intersection(mr.index)
+        r, mr = r.loc[idx], mr.loc[idx]
+        
+        if len(r) < 20:
+            return 0, 0, 0, 1
+        
+        ann_ret = r.mean() * TRADING_DAYS
+        ann_vol = r.std() * np.sqrt(TRADING_DAYS)
+        sharpe = (ann_ret - RISK_FREE_RATE) / ann_vol if ann_vol > 0 else 0
+        beta = np.cov(r, mr)[0, 1] / np.var(mr, ddof=1) if np.var(mr, ddof=1) > 0 else 1
+        
+        return ann_ret * 100, ann_vol * 100, sharpe, beta
+    except:
+        return 0, 0, 0, 1
 
 def compute_hot_index(df, window=20):
-    volume_ma = df["Volume"].rolling(window).mean().iloc[-1]
-    returns = df["Close"].pct_change()
-    volatility = returns.rolling(window).std().iloc[-1]
-    flow_proxy = (df["Close"]*df["Volume"]).rolling(window).mean().iloc[-1]
-    return {"volume_score": volume_ma, "volatility": volatility, "flow_proxy": flow_proxy}
-
-def robust_zscore(series):
-    med = np.median(series)
-    mad = np.median(np.abs(series - med))
-    if mad == 0:
-        return pd.Series(0, index=series.index)
-    return (series - med)/mad
+    try:
+        volume_ma = df["Volume"].rolling(window).mean().iloc[-1]
+        volume_std = df["Volume"].std()
+        volume_score = (volume_ma - df["Volume"].mean()) / volume_std if volume_std > 0 else 0
+        
+        returns = df["Close"].pct_change()
+        momentum = returns.rolling(window).sum().iloc[-1]
+        
+        hot_index = 0.5 * volume_score + 0.5 * momentum * 100
+        return hot_index
+    except:
+        return 0
 
 def compute_personalized_score(ann_ret, ann_vol, sharpe, beta, theta):
-    expected_return = 5 + theta * 20
-    acceptable_vol = 10 + theta * 25
-    ideal_beta = 0.7 + theta * 0.8
-    sharpe_fit = min(sharpe/3,1)
-    return_fit = np.clip(1 - abs(ann_ret - expected_return)/expected_return,0,1)
-    vol_fit = np.clip(1 - ann_vol/acceptable_vol,0,1)
-    beta_fit = np.clip(1 - abs(beta - ideal_beta)/ideal_beta,0,1)
-    personal_score = np.mean([sharpe_fit, return_fit, vol_fit, beta_fit])
-    return {"personal_score": personal_score, "sharpe_fit":sharpe_fit, "return_fit":return_fit,
-            "vol_fit":vol_fit,"beta_fit":beta_fit}
-
-def compute_final_score(hot_index_norm, personal_score, alpha):
-    return alpha*hot_index_norm + (1-alpha)*personal_score
+    try:
+        expected_return = 6 + theta * 12
+        acceptable_vol = 12 + theta * 15
+        ideal_beta = 0.6 + theta * 0.6
+        
+        sharpe_fit = min(max(sharpe, 0) / 2, 1)
+        
+        if ann_ret >= expected_return:
+            return_fit = 1.0
+        else:
+            return_fit = np.clip(ann_ret / expected_return, 0, 1)
+        
+        if ann_vol <= acceptable_vol:
+            vol_fit = 1.0
+        else:
+            vol_fit = np.clip(acceptable_vol / ann_vol, 0, 1)
+        
+        beta_diff = abs(beta - ideal_beta) / ideal_beta if ideal_beta > 0 else 0
+        beta_fit = np.clip(1 - beta_diff, 0, 1)
+        
+        personal_score = 0.4 * sharpe_fit + 0.3 * return_fit + 0.2 * vol_fit + 0.1 * beta_fit
+        
+        return {
+            "personal_score": personal_score,
+            "sharpe_fit": sharpe_fit,
+            "return_fit": return_fit,
+            "vol_fit": vol_fit,
+            "beta_fit": beta_fit
+        }
+    except:
+        return {
+            "personal_score": 0,
+            "sharpe_fit": 0,
+            "return_fit": 0,
+            "vol_fit": 0,
+            "beta_fit": 0
+        }
 
 # ===============================
 # 主流程
 # ===============================
-price_data = fetch_all_price_data(ETF_LIST, MARKET_BENCHMARK)
-market_df = price_data.get(MARKET_BENCHMARK)
 
-rows=[]
+with st.spinner("正在載入資料..."):
+    price_data = fetch_all_price_data(ETF_LIST, MARKET_BENCHMARK)
+    market_df = price_data.get(MARKET_BENCHMARK)
+
+if market_df is None:
+    st.error("❌ 無法取得市場基準資料")
+    st.stop()
+
+rows = []
 for etf, etf_type in ETF_LIST.items():
     df = price_data.get(etf)
-    if df is None or market_df is None:
+    if df is None:
         continue
+    
     latest_price = fetch_latest_price(etf)
     if latest_price is None:
         latest_price = float(df["Close"].iloc[-1])
+    
     ann_ret, ann_vol, sharpe, beta = calc_metrics(df, market_df)
     comp = compute_personalized_score(ann_ret, ann_vol, sharpe, beta, theta)
-    risk_score = comp["vol_fit"]*0.4 + comp["beta_fit"]*0.3 + comp["return_fit"]*0.2 + comp["sharpe_fit"]*0.1
-    div_info = fetch_dividend_info(etf)
-    hot_metrics = compute_hot_index(df)
+    hot_index = compute_hot_index(df)
     
-    # 判斷資料來源（新增）
-    data_source = "FinMind" if div_info["最新配息日"] is not None else "靜態資料"
+    stock_code = etf.replace('.TW', '')
+    div_info = get_static_dividend_data(stock_code)
     
     row = {
-        "ETF":etf, "類型":etf_type, "最新價":round(latest_price,2),
-        "最新配息日": div_info["最新配息日"], "最近一次配息":div_info["最近一次配息"],
-        "TTM配息":div_info["TTM配息"], "TTM殖利率%":div_info["TTM殖利率%"],
-        "配息資料來源": data_source,  # 新增欄位
-        "Sharpe":round(sharpe,2), "Beta":round(beta,2), "年化報酬%":round(ann_ret,2),
-        "年化波動%":round(ann_vol,2), "個人化分數":round(comp["personal_score"],3),
-        "風險適配分數":round(risk_score,3),
-        "volume_score":hot_metrics["volume_score"], "volatility":hot_metrics["volatility"],
-        "flow_proxy":hot_metrics["flow_proxy"],
-        "Sharpe適配":round(comp["sharpe_fit"],2), "報酬適配":round(comp["return_fit"],2),
-        "波動適配":round(comp["vol_fit"],2), "Beta適配":round(comp["beta_fit"],2)
+        "ETF": etf,
+        "類型": etf_type,
+        "最新價": round(latest_price, 2),
+        "最新配息日": div_info["最新配息日"],
+        "最近一次配息": div_info["最近一次配息"],
+        "TTM配息": div_info["TTM配息"],
+        "TTM殖利率%": div_info["TTM殖利率%"],
+        "Sharpe": round(sharpe, 2),
+        "Beta": round(beta, 2),
+        "年化報酬%": round(ann_ret, 2),
+        "年化波動%": round(ann_vol, 2),
+        "個人化分數": round(comp["personal_score"], 3),
+        "hot_index": hot_index,
+        "sharpe_fit": comp["sharpe_fit"],
+        "return_fit": comp["return_fit"],
+        "vol_fit": comp["vol_fit"],
+        "beta_fit": comp["beta_fit"]
     }
     rows.append(row)
 
 df_all = pd.DataFrame(rows)
+
 if df_all.empty:
-    st.error("❌ 無法取得即時/歷史報價資料，請稍後重試或使用「清除快取並更新報價」功能。")
+    st.error("❌ 無法取得任何 ETF 資料")
     st.stop()
-    
-df_all["hot_index"] = df_all["volume_score"] + df_all["flow_proxy"] - df_all["volatility"]
-df_all["hot_index_norm"] = robust_zscore(df_all["hot_index"]).fillna(0)
+
+# 標準化 hot_index
+hot_mean = df_all["hot_index"].mean()
+hot_std = df_all["hot_index"].std()
+if hot_std > 0:
+    df_all["hot_index_norm"] = (df_all["hot_index"] - hot_mean) / hot_std
+else:
+    df_all["hot_index_norm"] = 0
+
+# 計算 final_score
+df_all["final_score"] = (
+    ALPHA_MODEL * df_all["hot_index_norm"] +
+    (1 - ALPHA_MODEL) * df_all["個人化分數"]
+)
+
+# 排序
+sort_mapping = {
+    "綜合分數": "final_score",
+    "個人化分數": "個人化分數",
+    "年化報酬率": "年化報酬%",
+    "Sharpe Ratio": "Sharpe",
+    "TTM 殖利率": "TTM殖利率%"
+}
+
+sort_col = sort_mapping.get(sort_option, "final_score")
+df_ui = df_all.sort_values(sort_col, ascending=False).head(TOP_N)
 
 # ===============================
-# θ 排序 & Top-N 表格
+# 顯示結果
 # ===============================
-THETA_LIST = [0.0,0.25,0.5,0.75,1.0]
-theta_rankings = {}
 
-for t in THETA_LIST:
-    rows_theta=[]
-    for etf, etf_type in ETF_LIST.items():
-        df = price_data.get(etf)
-        if df is None or market_df is None:
-            continue
-        ann_ret, ann_vol, sharpe, beta = calc_metrics(df, market_df)
-        comp = compute_personalized_score(ann_ret, ann_vol, sharpe, beta, t)
-        final_score = compute_final_score(
-            df_all.loc[df_all["ETF"]==etf, "hot_index_norm"].values[0],
-            comp["personal_score"],
-            ALPHA_MODEL
-        )
-        base_row = df_all[df_all["ETF"]==etf].iloc[0]
-        row = {"ETF":etf,"類型":etf_type,"θ":t,"最新價":base_row["最新價"],
-               "最新配息日":base_row["最新配息日"],"最近一次配息":base_row["最近一次配息"],
-               "TTM配息":base_row["TTM配息"],"TTM殖利率%":base_row["TTM殖利率%"],
-               "final_score":final_score,**comp,"hot_index":base_row["hot_index"]}
-        rows_theta.append(row)
-    df_theta = pd.DataFrame(rows_theta).sort_values("final_score", ascending=False)
-    theta_rankings[t] = df_theta
+st.subheader(f"🎯 Top {TOP_N} ETF 排序")
+st.caption(f"排序依據：{sort_option} | 風險類型：{risk_profile} (θ={theta:.2f})")
 
-theta_display_closest = min(THETA_LIST, key=lambda x: abs(x-theta))
-df_ui = theta_rankings[theta_display_closest].head(TOP_N)
+display_cols = [
+    "ETF", "類型", "最新價", "TTM殖利率%",
+    "年化報酬%", "年化波動%", "Sharpe", "Beta",
+    "個人化分數", "final_score"
+]
 
-# ===============================
-# 雷達圖專用資料
-# ===============================
+st.dataframe(df_ui[display_cols], use_container_width=True)
+
+# 雷達圖
+st.subheader(f"🕸️ Top {TOP_N} ETF 多指標雷達圖")
+
 radar_metrics = ["sharpe_fit", "return_fit", "vol_fit", "beta_fit"]
 df_radar = df_ui.copy()
+
 for col in radar_metrics:
     min_v = df_radar[col].min()
     max_v = df_radar[col].max()
@@ -672,51 +384,9 @@ for col in radar_metrics:
     else:
         df_radar[col] = 0.5
 
-# ===============================
-# Top-N 表格
-# ===============================
-st.subheader(f"🎯 Top {TOP_N} ETF 排序（θ={round(theta,2)}, α={ALPHA_MODEL:.2f}）")
-st.caption(f"依據您的風險類型 **{risk_profile}** 計算的最適 ETF 組合")
-
-st.dataframe(
-    df_ui[["ETF","類型","最新價","最新配息日","最近一次配息",
-           "TTM配息","TTM殖利率%","final_score","personal_score",
-           "sharpe_fit","return_fit","vol_fit","beta_fit","hot_index"]],
-    use_container_width=True
-)
-
-# ===============================
-# 資料來源說明（新增）
-# ===============================
-st.caption(
-    "💡 **資料來源說明**：\n"
-    "- 配息資料優先使用 FinMind API（免費開源）\n"
-    "- 若 API 無回應則使用手動維護的靜態資料\n"
-    "- 靜態資料每季更新一次，以各 ETF 官網公告為準"
-)
-
-# 顯示資料來源統計（新增）
-api_count = df_all[df_all["配息資料來源"] == "FinMind"].shape[0]
-static_count = df_all[df_all["配息資料來源"] == "靜態資料"].shape[0]
-
-col1, col2 = st.columns(2)
-with col1:
-    st.metric("FinMind API 成功數", api_count)
-with col2:
-    st.metric("靜態資料使用數", static_count)
-
-if static_count > 0:
-    st.info(
-        f"⚠️ 有 {static_count} 檔 ETF 使用靜態配息資料，"
-        "建議查閱各 ETF 官網取得最新配息公告"
-    )
-
-# ===============================
-# Top-N 雷達圖 (Plotly)
-# ===============================
-st.subheader(f"🕸️ Top {TOP_N} ETF 多指標雷達圖")
 radar_labels = ["Sharpe", "Return", "Volatility", "Beta"]
 fig = go.Figure()
+
 for _, row in df_radar.iterrows():
     values = [row[m] for m in radar_metrics]
     values.append(values[0])
@@ -727,87 +397,25 @@ for _, row in df_radar.iterrows():
         name=row["ETF"],
         opacity=0.6
     ))
+
 fig.update_layout(
     polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
     showlegend=True,
     margin=dict(l=40, r=40, t=40, b=60)
 )
+
 st.plotly_chart(fig, use_container_width=True)
 
-# ===============================
-# Top-N 氣泡圖 (Altair)
-# ===============================
-st.subheader(f"💭 Top {TOP_N} ETF 氣泡圖（θ={round(theta,2)}）")
-bubble = alt.Chart(df_ui).mark_circle(opacity=0.7, stroke="black", strokeWidth=0.5).encode(
-    x=alt.X("sharpe_fit:Q", title="Sharpe 適配"),
-    y=alt.Y("personal_score:Q", title="個人化分數"),
-    size=alt.Size("beta_fit:Q", title="Beta 適配", scale=alt.Scale(range=[100,1600])),
-    color=alt.Color("類型:N", title="ETF 類型"),
-    tooltip=["ETF","sharpe_fit","return_fit","vol_fit","beta_fit",
-             "personal_score","hot_index","final_score"]
-)
-st.altair_chart(bubble, use_container_width=True)
-
-# ===============================
-# V2-1 非線性距離（Gaussian Fit）
-# ===============================
-def gaussian_fit(x, mu, sigma):
-    if sigma <= 0: return 0.0
-    return np.exp(-0.5 * ((x - mu) / sigma) ** 2)
-
-def nonlinear_personal_score(row, theta):
-    mu_ret = 5 + theta * 20
-    mu_vol = 10 + theta * 25
-    mu_beta = 0.7 + theta * 0.8
-    ret_score = gaussian_fit(row["年化報酬%"], mu_ret, mu_ret * 0.5)
-    vol_score = gaussian_fit(row["年化波動%"], mu_vol, mu_vol * 0.5)
-    beta_score = gaussian_fit(row["Beta"], mu_beta, mu_beta * 0.5)
-    sharpe_score = np.tanh(row["Sharpe"] / 2)
-    return np.mean([ret_score, vol_score, beta_score, sharpe_score])
-
-def multi_period_return(df):
-    closes = df["Close"]
-    periods = {"3M": 63, "6M": 126, "12M": 252}
-    rets = {}
-    for k, p in periods.items():
-        if len(closes) >= p: rets[k] = closes.iloc[-1] / closes.iloc[-p] - 1
-        else: rets[k] = np.nan
-    weights = {"3M":0.5,"6M":0.3,"12M":0.2}
-    weighted_ret = sum(rets[k]*weights[k] for k in rets if not np.isnan(rets[k]))
-    return weighted_ret * 100
-
-def risk_distribution_metrics(df):
-    r = df["Close"].pct_change().dropna()
-    downside = r[r<0]
-    downside_vol = downside.std()*np.sqrt(TRADING_DAYS) if len(downside)>0 else 0
-    var_95 = np.percentile(r,5)
-    cvar_95 = r[r<=var_95].mean()*100 if len(r[r<=var_95])>0 else 0
-    return downside_vol*100, cvar_95
-
-v2_rows=[]
-for _, row in df_all.iterrows():
-    etf = row["ETF"]
-    df = price_data.get(etf)
-    if df is None: continue
-    v2_score = nonlinear_personal_score(row, theta)
-    mp_ret = multi_period_return(df)
-    downside_vol, cvar_95 = risk_distribution_metrics(df)
-    v2_rows.append({
-        "ETF":etf,
-        "V2_非線性分數": round(v2_score,3),
-        "V2_多期間加權報酬%": round(mp_ret,2),
-        "V2_下行波動%": round(downside_vol,2),
-        "V2_CVaR_95%": round(cvar_95,2)
-    })
-
-df_v2 = pd.DataFrame(v2_rows)
-df_all = df_all.merge(df_v2, on="ETF", how="left")
-
+# 完整比較表
 st.divider()
-st.subheader("🧪 V2 進階分析（非線性 × 多期間 × 風險分布）")
-st.caption("⚠️ 以下為 V2 分析模組，不影響任何 V1 排序與推薦結果")
+st.subheader("📊 完整 ETF 比較表")
+
 st.dataframe(
-    df_all[["ETF","V2_非線性分數","V2_多期間加權報酬%",
-            "V2_下行波動%","V2_CVaR_95%"]],
+    df_all[[
+        "ETF", "類型", "最新價", "年化報酬%", "年化波動%",
+        "Sharpe", "Beta", "TTM殖利率%", "個人化分數", "final_score"
+    ]].sort_values("個人化分數", ascending=False),
     use_container_width=True
 )
+
+st.caption("資料來源：Yahoo Finance | 配息資料：靜態資料（2025/02/10 更新）")
