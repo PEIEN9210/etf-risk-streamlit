@@ -7,9 +7,17 @@ Original file is located at
     https://colab.research.google.com/drive/1Y1jRJvzhlUjdd66vnUOBj57YzwXHYc1s
 """
 
-# app.py 
 # -*- coding: utf-8 -*-
-
+"""
+台灣 ETF 個人化推薦系統 - 修正版
+修正內容：
+1. 排序邏輯錯誤
+2. 個人化分數計算
+3. HotIndex 重新設計
+4. 資料驗證機制
+5. 真實排序選項
+6. 學術引用修正
+"""
 
 import streamlit as st
 import pandas as pd
